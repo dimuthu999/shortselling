@@ -1,0 +1,407 @@
+---
+title: "Clean and Merge Markit, FISD and TRACE"
+date: "July 11, 2017"
+output:
+  html_document:
+    css: bodycss.css
+    fig_width: 8
+    font-family: Helvetica,Arial,sans-serif;
+    number_section: yes
+    toc: yes
+  pdf_document:
+    toc: yes
+  word_document:
+    toc: yes
+linestretch: 2
+bibliography: C:\Users\dnratnadiwakara\OneDrive\library.bib
+---
+
+<style type="text/css">
+body{ 
+      font-size: 15px;
+      font-family: Helvetica,Arial,sans-serif;
+      line-height: 200%;
+  }
+  
+.author {
+ font-size: 15px;
+ color: Black;
+ font-style: normal;
+ text-align: center;
+}
+
+
+.date { 
+ font-size: 15px;
+ color: Black;
+ font-style: normal;
+ text-align: center;
+}
+
+.title{
+  text-align: center;
+  font-size: 15px;
+ color: Black;
+ 
+}
+
+.toc-ignore{
+  text-align: center;
+  font-size: 15px;
+ color: Black;
+}
+
+.fluid-row{
+  text-align: center;
+  font-size: 15px;
+ color: Black;
+}
+
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE,echo = FALSE, fig.align='center')
+```
+
+
+
+```{r initialize,message=FALSE,warning=FALSE}
+rm(list=ls())
+path = "E:/shortselling"
+setwd(path)
+require(gdata)
+require(dplyr)
+require(zoo)
+require(plyr)
+require(sqldf)
+require(stargazer)
+require(data.table)
+
+.jinit(classpath="C:/Users/dnratnadiwakara/Documents/sas.core.jar", parameters="-Xmx4g")
+.jaddClassPath("C:/Users/dnratnadiwakara/Documents/sas.intrnet.javatools.jar")
+
+
+run_and_fetch <- function(sql){
+  fetch(dbSendQuery(wrds,sql),n=-1)
+}
+
+run_query <- function(sql){
+  res <<-dbSendQuery(wrds,sql)
+}
+
+
+fetch_last_query <- function(name="data",rows=-1)  {
+  if(is.null(res)) cat("No res object","\n")
+  eval(parse(text=paste(name," <<- fetch(res, n = ",rows,")",sep="")))
+}
+
+trim <- function (x) gsub("^\\s+|\\s+$", "", x)
+
+
+wrds <- wrdsconnect(user='dimuthu9', pass='{SAS002}4FA9941A27D636B15931DF1E08D4704D')
+# wrds <- wrdsconnect(user='mkilic', pass='{SAS002}4FA9941A27D636B15931DF1E08D4704D')
+
+
+```
+
+```{r table_identification}
+libraries <- run_and_fetch("select distinct libname from dictionary.tables")
+databases <- run_and_fetch("select distinct memname from dictionary.columns where libname='FISD'")
+
+```
+
+# Issue Data
+```{r issue_data}
+head <- run_and_fetch("select * from FISD.FISD_MERGEDISSUE (obs=1000)")
+count <- run_and_fetch("select count(COMPLETE_CUSIP) from FISD.FISD_MERGEDISSUE")
+
+issue_data <- run_and_fetch("select ISSUE_ID, COMPLETE_CUSIP, INTEREST_FREQUENCY, FIRST_INTEREST_DATE,LAST_INTEREST_DATE,COUPON_TYPE,COUPON,COUPON_CHANGE_INDICATOR,CONVERTIBLE,FIX_FREQUENCY,PUTABLE,DAY_COUNT_BASIS from FISD.FISD_MERGEDISSUE")
+issue_data <- issue_data[trim(issue_data$COUPON_TYPE)=="F",]
+issue_data <- issue_data[trim(issue_data$COUPON_CHANGE_INDICATOR)=="N",]
+issue_data <- issue_data[trim(issue_data$PUTABLE)=="N",]
+issue_data <- issue_data[trim(issue_data$FIX_FREQUENCY)=="",]
+issue_data <- issue_data[trim(issue_data$INTEREST_FREQUENCY)=="2",]
+issue_data <- issue_data[trim(issue_data$DAY_COUNT_BASIS)=="30/360",]
+issue_data <- issue_data[,c("ISSUE_ID","COMPLETE_CUSIP","FIRST_INTEREST_DATE","LAST_INTEREST_DATE","COUPON")]
+issue_data <- data.table(issue_data)
+setkeyv(issue_data,c('ISSUE_ID','COMPLETE_CUSIP'))
+```
+
+      
+# FISD Return Calculation
+
+```{r fisd_return}
+
+    # current day
+    day1 <- run_and_fetch("select max(ISSUE_ID) as ISSUE_ID,max(CUSIP_ISSUER_ID) as CUSIP_ISSUER_ID,max(CUSIP_ISSUE_ID) as CUSIP_ISSUE_ID,max(FILE_DATE)+1 as FILE_DATE,sum(RPTD_PR*INPUT(ASCII_RPTD_VOL_TX,20.))/sum(INPUT(ASCII_RPTD_VOL_TX,20.)) as wtavgprice1 from FISD.FISD_TSALES where FILE_DATE IS NOT NULL and ASCII_RPTD_VOL_TX IS NOT NULL and RPTD_PR IS NOT NULL GROUP BY ISSUE_ID,FILE_DATE")
+    day1['CUSIP'] <- paste(day1$CUSIP_ISSUER_ID,day1$CUSIP_ISSUE_ID,sep="")
+    day1 <- data.table(day1)
+    setkeyv(day1,c('CUSIP','FILE_DATE'))
+
+    # next day
+    day2 <- run_and_fetch("select max(ISSUE_ID) as ISSUE_ID,max(CUSIP_ISSUER_ID) as CUSIP_ISSUER_ID,max(CUSIP_ISSUE_ID) as CUSIP_ISSUE_ID,max(FILE_DATE) as FILE_DATE,sum(RPTD_PR*INPUT(ASCII_RPTD_VOL_TX,20.))/sum(INPUT(ASCII_RPTD_VOL_TX,20.)) as wtavgprice2 from FISD.FISD_TSALES where FILE_DATE IS NOT NULL and ASCII_RPTD_VOL_TX IS NOT NULL and RPTD_PR IS NOT NULL GROUP BY ISSUE_ID,FILE_DATE")
+    day2['CUSIP'] <- paste(day2$CUSIP_ISSUER_ID,day2$CUSIP_ISSUE_ID,sep="")
+    day2 <- data.table(day2)
+    setkeyv(day2,c('CUSIP','FILE_DATE'))
+
+    # merge current day's price and the next day's price
+    merged <- merge(day1,day2[,c("CUSIP","FILE_DATE","wtavgprice2")],by=c('CUSIP','FILE_DATE'))
+    merged <- merge(merged,issue_data,by.x = "CUSIP",by.y = "COMPLETE_CUSIP")
+
+    rm(day1)
+    rm(day2)
+    gc()
+    merged$FILE_DATE <- as.Date(merged$FILE_DATE,origin = "1960-01-01")
+    merged[,FILE_MONTH:=as.yearmon(merged$FILE_DATE)]
+    merged$FIRST_INTEREST_DATE <- as.Date(merged$FIRST_INTEREST_DATE)
+    merged$LAST_INTEREST_DATE <- as.Date(merged$LAST_INTEREST_DATE)
+
+    # identifying number of returns per month
+    merged[,ind:=1]
+    temp <- merged[, list(count = sum(ind)), by = list(CUSIP,FILE_MONTH)]
+    merged <- merge(merged,temp,by=c('CUSIP','FILE_MONTH'))
+    # select issue-months where number of daily obs >=10
+    merged <- subset(merged,count>=10)
+
+    print("Number of issues")
+    length(unique(merged$CUSIP))
+    print("Number of issuers")
+    length(unique(merged$CUSIP_ISSUER_ID))
+
+    # calculate mean daily volume weighted return for each issue-month
+    merged[,DAILY_RETURN:=log(merged$wtavgprice2/merged$wtavgprice1)]
+    merged <- merged[, list(DAILY_RETURN = mean(DAILY_RETURN)), by = list(CUSIP,FILE_MONTH)]
+
+    saveRDS(merged, file = "E:/shortselling/Data/Processed/fisd_processed.rds")
+
+merged <- readRDS(file="E:/shortselling/Data/Processed/fisd_processed.rds")
+```
+
+
+```{r fisd_return_test}
+# count <- run_and_fetch("select count(RPTD_LAST_PR) from FISD.FISD_TSALES")
+# tsales <- run_query("select org.* from FISD.FISD_TSALES as org where ISSUE_ID=5 JOIN (select ISSUE_ID as id2, RPTD_LAST_PR as price2, FILE_DATE-1 as date2 from FISD.FISD_TSALES) as next ON org.ISSUE_ID=next.id2 AND org.FILE_DATE=next.date2")
+# fetch_last_query(name = "tsales")
+# t <- run_and_fetch("select max(ISSUE_ID) as ISSUE_ID,max(CUSIP_ISSUER_ID) as CUSIP_ISSUER_ID,max(CUSIP_ISSUE_ID) as CUSIP_ISSUE_ID,max(FILE_DATE) as FILE_DATE,sum(RPTD_PR*INPUT(ASCII_RPTD_VOL_TX,20.))/sum(INPUT(ASCII_RPTD_VOL_TX,20.)) as wtavgprice from FISD.FISD_TSALES where ISSUE_ID=5 AND FILE_DATE IS NOT NULL and ASCII_RPTD_VOL_TX IS NOT NULL and RPTD_PR IS NOT NULL GROUP BY ISSUE_ID,FILE_DATE")
+# t2 <- run_and_fetch("select max(ISSUE_ID) as ISSUE_ID,max(CUSIP_ISSUER_ID) as CUSIP_ISSUER_ID,max(CUSIP_ISSUE_ID) as CUSIP_ISSUE_ID,max(FILE_DATE)-1 as FILE_DATE,sum(RPTD_PR*INPUT(ASCII_RPTD_VOL_TX,20.))/sum(INPUT(ASCII_RPTD_VOL_TX,20.)) as wtavgprice from FISD.FISD_TSALES where ISSUE_ID=5 AND FILE_DATE IS NOT NULL and ASCII_RPTD_VOL_TX IS NOT NULL and RPTD_PR IS NOT NULL GROUP BY ISSUE_ID,FILE_DATE")
+# 
+# t3 <- run_query("select max(day1.ISSUE_ID) as ISSUE_ID,max(day1.CUSIP_ISSUER_ID) as CUSIP_ISSUER_ID,max(day1.CUSIP_ISSUE_ID) as CUSIP_ISSUE_ID,max(day1.FILE_DATE) as FILE_DATE,sum(day1.RPTD_PR*INPUT(day1.ASCII_RPTD_VOL_TX,20.))/sum(INPUT(day1.ASCII_RPTD_VOL_TX,20.)) as wtavgprice from FISD.FISD_TSALES where ISSUE_ID=5 AND FILE_DATE IS NOT NULL and ASCII_RPTD_VOL_TX IS NOT NULL and RPTD_PR IS NOT NULL GROUP BY ISSUE_ID,FILE_DATE as day1 JOIN (select max(ISSUE_ID) as ISSUE_ID,max(CUSIP_ISSUER_ID) as CUSIP_ISSUER_ID,max(CUSIP_ISSUE_ID) as CUSIP_ISSUE_ID,max(FILE_DATE)-1 as FILE_DATE,sum(RPTD_PR*INPUT(ASCII_RPTD_VOL_TX,20.))/sum(INPUT(ASCII_RPTD_VOL_TX,20.)) as wtavgprice from FISD.FISD_TSALES where ISSUE_ID=5 AND FILE_DATE IS NOT NULL and ASCII_RPTD_VOL_TX IS NOT NULL and RPTD_PR IS NOT NULL GROUP BY ISSUE_ID,FILE_DATE) as day2 ON day1.ISSUE_ID=day2.ISSUE_ID AND day1.FILE_DATE=day2.FILE_DATE")
+
+```
+
+# Shorting Fee Clean
+
+```{r combine_markit_fees}
+
+path = "E:/shortselling/Data/Raw/WRDS/Markit/Markit Securities Finance Analytics - Bonds/Corporate/splitted"
+file_name = paste(path,"/markit_fees_combined.csv",sep="")
+
+# files <- list.files(path=path,pattern = "*.rds",full.names = TRUE)
+# for(fn in files) {
+#   temp <- readRDS(file=fn)
+#   temp <- temp[!is.na(temp$IndicativeFee) & temp$IndicativeFee>0,c("DataDate","ISIN","CUSIP","QuantityOnLoan","ValueOnLoan","ShortLoanQuantity","ShortLoanValue","IndicativeFee","IndicativeRebate")]
+#   write.table(temp,file=file_name,append=TRUE,sep="|",col.names=FALSE,quote=FALSE,row.names = FALSE,na="")
+# }
+# 
+# markit_fees <- read.table(file = file_name,sep = "|",stringsAsFactors = FALSE,fill=TRUE)
+# saveRDS(markit_fees,file=sub('.csv', '.rds', file_name))
+# file.remove(file_name)
+
+markit_fees <- readRDS(file=sub('.csv', '.rds', file_name))
+names(markit_fees) <- c("DataDate","ISIN","CUSIP","QuantityOnLoan","ValueOnLoan","ShortLoanQuantity","ShortLoanValue","IndicativeFee","IndicativeRebate")
+cusips <- unique(merged$CUSIP)
+markit_fees <- markit_fees[markit_fees$CUSIP %in% cusips,]
+markit_fees$DataDate <- as.Date(markit_fees$DataDate,"%m/%d/%Y")
+markit_fees['data_month'] <- as.yearmon(markit_fees$DataDate)
+
+markit_fees <- data.table(markit_fees)
+markit_fees <- markit_fees[, list(FEE = mean(IndicativeFee)), by = list(CUSIP,data_month)]
+setkeyv(markit_fees,c('CUSIP','data_month'))
+```
+
+# Merge FISD and Markit Fees
+
+```{r merge_fisd_markit}
+setkeyv(merged,c('CUSIP','FILE_MONTH'))
+merged <- merge(merged,markit_fees,by.x =c('CUSIP','FILE_MONTH') ,by.y = c('CUSIP','data_month'))
+rm(markit_fees)
+gc()
+
+# merged[,ind:=1]
+# temp <- merged[, list(count = sum(ind)), by = list(FILE_MONTH)]
+# merged <- merge(merged,temp,by=c('FILE_MONTH'))
+
+merged <- merged[!is.na(merged$DAILY_RETURN),]
+merged <- merged[!is.na(merged$FEE),]
+merged <- merged[,return_decile:=ntile(DAILY_RETURN,10),by=list(FILE_MONTH)]
+merged <- merged[,fee_decile:=ntile(FEE,10),by=list(FILE_MONTH)]
+
+# merged <- as.data.frame(merged)
+# 
+# return_deciles <- ddply(merged,.(FILE_MONTH),summarise,
+#                         ret_d1=quantile(DAILY_RETURN,0.1),ret_d2=quantile(DAILY_RETURN,0.2),ret_d3=quantile(DAILY_RETURN,0.3),
+#                         ret_d4=quantile(DAILY_RETURN,0.4),ret_d5=quantile(DAILY_RETURN,0.5),ret_d6=quantile(DAILY_RETURN,0.6),
+#                         ret_d7=quantile(DAILY_RETURN,0.7),ret_d8=quantile(DAILY_RETURN,0.8),ret_d9=quantile(DAILY_RETURN,0.9))
+# fee_deciles <- ddply(merged,.(FILE_MONTH),summarise,
+#                         fee_d1=quantile(FEE,0.1),fee_d2=quantile(FEE,0.2),fee_d3=quantile(FEE,0.3),
+#                         fee_d4=quantile(FEE,0.4),fee_d5=quantile(FEE,0.5),fee_d6=quantile(FEE,0.6),
+#                         fee_d7=quantile(FEE,0.7),fee_d8=quantile(FEE,0.8),fee_d9=quantile(FEE,0.9))
+# 
+# merged <- merge(merged,return_deciles,by=c("FILE_MONTH"))
+# merged <- merge(merged,fee_deciles,by=c("FILE_MONTH"))
+# 
+# merged['return_decile_2'] <- ifelse(merged$DAILY_RETURN<merged$ret_d1,1,
+#                                     ifelse(merged$DAILY_RETURN<merged$ret_d2,2,
+#                                            ifelse(merged$DAILY_RETURN<merged$ret_d3,3,
+#                                                   ifelse(merged$DAILY_RETURN<merged$ret_d4,4,
+#                                                          ifelse(merged$DAILY_RETURN<merged$ret_d5,5,
+#                                                                 ifelse(merged$DAILY_RETURN<merged$ret_d6,6,
+#                                                                        ifelse(merged$DAILY_RETURN<merged$ret_d7,7,
+#                                                                               ifelse(merged$DAILY_RETURN<merged$ret_d8,8,
+#                                                                                      ifelse(merged$DAILY_RETURN<merged$ret_d9,9,10)))))))))
+# 
+# merged['fee_decile_2'] <- ifelse(merged$FEE<merged$fee_d1,1,
+#                                     ifelse(merged$FEE<merged$fee_d2,2,
+#                                            ifelse(merged$FEE<merged$fee_d3,3,
+#                                                   ifelse(merged$FEE<merged$fee_d4,4,
+#                                                          ifelse(merged$FEE<merged$fee_d5,5,
+#                                                                 ifelse(merged$FEE<merged$fee_d6,6,
+#                                                                        ifelse(merged$FEE<merged$fee_d7,7,
+#                                                                               ifelse(merged$FEE<merged$fee_d8,8,
+#                                                                                      ifelse(merged$FEE<merged$fee_d9,9,10)))))))))
+# 
+# merged <- data.table(merged)
+```
+
+
+# Double Sort
+
+```{r double_sort1}
+double_sort <- merged[, lapply(.SD, mean, na.rm=TRUE), by=list(fee_decile), .SDcols=c("DAILY_RETURN", "FEE") ] 
+double_sort_obs <- merged[, lapply(.SD, length), by=list(fee_decile), .SDcols=c("DAILY_RETURN") ]
+```
+
+
+
+
+### Step 2: CRSP to COMPUSTAT Link Table
+CRSP.CCMXPF_LINKTABLE provides linking information between gvkey and permco
+
+Link types are restricted to primary link types and USEDFLAG is restricted to be 1.
+
+
+> Primary Link Types<br/><b>LC:</b> Link research complete (after extensive research by CRSP). Standard connection between databases.<br/><b>LU:</b> Link is unresearched by CRSP. It is established by comparing the Compustat and historical CRSP CUSIPs. LU represents the most popular link type.<br/><b>LS:</b> Link valid for this security only. Other CRSP PERMNOs with the same PERMCO will link to other GVKEYs. LS links mainly relate to ETFs where a single CRSP PERMCO links to multiple Compustat GVKEYs. In Compustat, even though they may belong to the same investment company (e.g. ISHARES), ETFs are presented with different GVKEYs and CRSP flags this situation.<br/><b>USEDFLAG</b> item notes if a link was used to to build a composite GVKEY record corresponding to the PERMNO. It originates from the CCMXPFLNKUSED table and is therefore CRSP-centric. It may be helpful in cases of multiple securities to establish a connection between all securities involved, even those not directly linked<br/><br/> More info https://wrds-web.wharton.upenn.edu/wrds/support/Data/_001Manuals%20and%20Overviews/_002CRSP/ccm-overview.cfm#section09
+
+```{r ccm_xpf,message=FALSE,warning=FALSE,}
+run_query("select * from CRSP.CCMXPF_LINKTABLE")
+fetch_last_query(name="CCMXPF_LINKTABLE")
+CCMXPF_LINKTABLE <- data.table(CCMXPF_LINKTABLE)
+CCMXPF_LINKTABLE <- CCMXPF_LINKTABLE[linktype %in% c("LU","LC","LS") & USEDFLAG=="1"]
+CCMXPF_LINKTABLE <- as.data.frame(CCMXPF_LINKTABLE)
+stargazer(head(CCMXPF_LINKTABLE,10),summary = FALSE,type="text")
+```
+
+
+### Step 3: OPTIONM Identificatoin Information
+OPTIONM.SECNMD provides the mapping from secid to cusip.
+
+```{r optionm, message=FALSE,warning=FALSE,}
+run_query("select * from OPTIONM.SECNMD")
+fetch_last_query(name="SECNMD")
+SECNMD <- SECNMD[,c("secid","cusip","issuer","effect_date")]
+SECNMD <- SECNMD[!duplicated(SECNMD[,c("secid","cusip","issuer")]),]
+SECNMD['cusip_optionm'] <- SECNMD$cusip
+stargazer(head(SECNMD,10),summary = FALSE,type="text")
+```
+
+### Step 4: Merging CRSP, COMPUSTAT and OPTIONM Identification Information
+
+```{r merge, message=FALSE,warning=FALSE,}
+## 4.1 Merge CRSP and COMPUSTAT
+STOCKNAMES_GVKEY <- merge(STOCKNAMES,CCMXPF_LINKTABLE, by.x = c("PERMCO"),by.y=c("lpermco"), all.x = TRUE)
+## 4.2 Remove Duplicates
+STOCKNAMES_GVKEY <- STOCKNAMES_GVKEY[!duplicated(STOCKNAMES_GVKEY[,c("PERMCO","NAMEDT","NAMEENDDT","NCUSIP","gvkey")]),]
+## 4.3 Merge STOCKNAMES_GVKEY with optionm id information
+STOCKNAMES_GVKEY_OPTIONM <- merge(STOCKNAMES_GVKEY,SECNMD,by.x=c("NCUSIP"),by.y = c("cusip"),all.y = TRUE)
+## 4.4 Remove duplicates in the merged data
+STOCKNAMES_GVKEY_OPTIONM <- STOCKNAMES_GVKEY_OPTIONM[!duplicated(STOCKNAMES_GVKEY_OPTIONM[,c("PERMCO","NAMEDT","NAMEENDDT","NCUSIP","gvkey","secid")]),]
+## 4.5 Store unmerged data in a data frame called unmerged
+unmerged <- STOCKNAMES_GVKEY_OPTIONM[is.na(STOCKNAMES_GVKEY_OPTIONM$PERMCO),c("secid","issuer","cusip_optionm","effect_date")]
+unmerged <- unmerged[!duplicated(unmerged),]
+## 4.6 Store merged data in a dataframe called STOCKNAMES_GVKEY_OPTIONM
+STOCKNAMES_GVKEY_OPTIONM <- STOCKNAMES_GVKEY_OPTIONM[!is.na(STOCKNAMES_GVKEY_OPTIONM$PERMCO),]
+
+```
+
+#### Head of merged data
+Table below shows a sample of mreged data where same PERMCO is associated with multiple gvkeys, cusips and secids. 
+
+```{r message=FALSE,warning=FALSE,}
+#head(STOCKNAMES_GVKEY_OPTIONM[,c("NCUSIP","PERMCO","NAMEDT","NAMEENDDT","CUSIP","COMNAM","gvkey","secid")],10)
+
+STOCKNAMES_GVKEY_OPTIONM['NCUSIP6'] <- substr(STOCKNAMES_GVKEY_OPTIONM$NCUSIP,1,6)
+
+temp <- STOCKNAMES_GVKEY_OPTIONM[,c("NCUSIP6","PERMCO")]
+temp <- temp[!duplicated(temp),]
+temp <- temp[duplicated(temp$PERMCO),]
+
+temp <-STOCKNAMES_GVKEY_OPTIONM[STOCKNAMES_GVKEY_OPTIONM$PERMCO %in% unique(temp$PERMCO),c("NCUSIP6","PERMCO","NAMEDT","NAMEENDDT","linkprim","linktype","CUSIP","COMNAM","gvkey","secid")]
+
+temp <- temp[order(temp$PERMCO),]
+stargazer(head(temp,25),summary = FALSE,type="text")
+```
+
+#### Head of unmerged data
+```{r message=FALSE,warning=FALSE,}
+stargazer(head(unmerged,10),summary = FALSE,type="text")
+```
+
+### Step 5: Problematic matches
+
+There are instances (157 PERMCOs out of 17,605 PERMCOs) where multiple gvkeys and secids areassociated with same PERMCO for the same dates (e.g.: when PERMCO ==61, for the period 2000-05-04 to 2002-07-29 there are two matching gvkeys, 143971 and 001164 ). 
+
+```{r remdups, message=FALSE,warning=FALSE,}
+
+temp <- unique(STOCKNAMES_GVKEY_OPTIONM[duplicated(STOCKNAMES_GVKEY_OPTIONM[,c("PERMCO","NAMEDT","NAMEENDDT")]),'PERMCO'])
+
+temp <- STOCKNAMES_GVKEY_OPTIONM[STOCKNAMES_GVKEY_OPTIONM$PERMCO %in% temp,]
+stargazer(head(temp[order(temp$PERMCO),c("NCUSIP6","PERMCO","NAMEDT","NAMEENDDT","linkprim","linktype","CUSIP","COMNAM","gvkey","secid")],25),summary = FALSE,type="text")
+```
+
+
+### Step 6: Cleaned link table
+```{r warning=FALSE,message=FALSE}
+
+## 6.1 get the problematic permcos
+temp <- unique(STOCKNAMES_GVKEY_OPTIONM[duplicated(STOCKNAMES_GVKEY_OPTIONM[,c("PERMCO","NAMEDT","NAMEENDDT")]),'PERMCO'])
+
+## 6.2 remove problematic permcos
+temp <- STOCKNAMES_GVKEY_OPTIONM[!STOCKNAMES_GVKEY_OPTIONM$PERMCO %in% temp,]
+
+temp['combined_key']<- paste(temp$PERMCO,temp$gvkey,temp$secid,sep = "_")
+temp$NAMEDT <- as.Date(temp$NAMEDT)
+temp$NAMEENDDT <- as.Date(temp$NAMEENDDT)
+
+## 6.3 consolidate link table
+link_table <- ddply(temp,.(combined_key),summarise,start_date=min(NAMEDT,na.rm = TRUE),end_date=max(NAMEENDDT))
+
+temp <- do.call(rbind.data.frame, strsplit(link_table$combined_key, "_"))
+names(temp) <- c("PERMCO","GVKEY","SECID")
+link_table <- cbind(temp,link_table)
+link_table$combined_key <- NULL
+write.csv(link_table,file="crsp_comp_optionm_link.csv")
+stargazer(head(link_table,25),type="text",summary = FALSE)
+```
+
+#### Records with different secids for same PERMCO
+```{r warning=FALSE,message=FALSE}
+temp <- link_table[duplicated(link_table$PERMCO),'PERMCO']
+temp <- link_table[link_table$PERMCO %in% temp,]
+temp <- temp[order(temp$PERMCO),]
+stargazer(head(temp,25),type="text",summary = FALSE,column.sep.width = "5pt")
+```
+
+```{r}
+dbDisconnect(wrds)
+```
+
