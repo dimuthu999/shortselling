@@ -1,0 +1,121 @@
+---
+title: "Merge CRSP, COMPUSTAT and OPTIONM"
+date: "August 2, 2017"
+output: 
+  html_document: 
+    css: bodycss.css
+    fig_height: 6
+    fig_width: 12
+    toc: yes
+---
+
+
+
+```{r initialize,message=FALSE,warning=FALSE}
+rm(list=ls())
+path = "E:/shortselling"
+setwd(path)
+require(gdata)
+require(dplyr)
+require(zoo)
+require(plyr)
+require(sqldf)
+require(stargazer)
+require(data.table)
+
+.jinit(classpath="C:/Users/dnratnadiwakara/Documents/sas.core.jar", parameters="-Xmx4g")
+.jaddClassPath("C:/Users/dnratnadiwakara/Documents/sas.intrnet.javatools.jar")
+
+
+run_and_fetch <- function(sql){
+  fetch(dbSendQuery(wrds,sql),n=-1)
+}
+
+run_query <- function(sql){
+  res <<-dbSendQuery(wrds,sql)
+}
+
+
+fetch_last_query <- function(name="data",rows=-1)  {
+  if(is.null(res)) cat("No res object","\n")
+  eval(parse(text=paste(name," <<- fetch(res, n = ",rows,")",sep="")))
+}
+
+trim <- function (x) gsub("^\\s+|\\s+$", "", x)
+
+
+wrds <- wrdsconnect(user='dimuthu9', pass='{SAS002}4FA9941A27D636B15931DF1E08D4704D')
+```
+
+### Step 1: Entity Identification Information from CRSP
+STOCKNAMES table in CRSP database contains identification information for all the entities in the CRSP database. This step retrieves identification information and stores results in a data frame called STOCKNAMES.
+
+NAMEDT: Start Date of Effective Name<br/>
+NAMEENDDT: End Date of Effective Name <br/>
+NCUSIP: CUSIP Identifier - Historical <br/>
+CUSIP: CUSIP Identifier - Current
+
+```{r stocknames,message=FALSE,warning=FALSE,}
+run_query("select * from CRSP.STOCKNAMES")
+fetch_last_query(name="STOCKNAMES")
+STOCKNAMES <- STOCKNAMES[,c("PERMNO","PERMCO","NAMEDT","NAMEENDDT","CUSIP","NCUSIP","COMNAM","ST_DATE","END_DATE")]
+stargazer(head(STOCKNAMES,10),summary = FALSE,type="text")
+
+```
+
+
+### Step 2: CRSP to COMPUSTAT Link Table
+CRSP.CCMXPF_LINKTABLE provides linking information between gvkey and permco
+
+Link types are restricted to primary link types and USEDFLAG is restricted to be 1.
+
+
+> Primary Link Types<br/><b>LC:</b> Link research complete (after extensive research by CRSP). Standard connection between databases.<br/><b>LU:</b> Link is unresearched by CRSP. It is established by comparing the Compustat and historical CRSP CUSIPs. LU represents the most popular link type.<br/><b>LS:</b> Link valid for this security only. Other CRSP PERMNOs with the same PERMCO will link to other GVKEYs. LS links mainly relate to ETFs where a single CRSP PERMCO links to multiple Compustat GVKEYs. In Compustat, even though they may belong to the same investment company (e.g. ISHARES), ETFs are presented with different GVKEYs and CRSP flags this situation.<br/><b>USEDFLAG</b> item notes if a link was used to to build a composite GVKEY record corresponding to the PERMNO. It originates from the CCMXPFLNKUSED table and is therefore CRSP-centric. It may be helpful in cases of multiple securities to establish a connection between all securities involved, even those not directly linked<br/><br/> More info https://wrds-web.wharton.upenn.edu/wrds/support/Data/_001Manuals%20and%20Overviews/_002CRSP/ccm-overview.cfm#section09
+
+```{r ccm_xpf,message=FALSE,warning=FALSE,}
+run_query("select * from CRSP.CCMXPF_LINKTABLE")
+fetch_last_query(name="CCMXPF_LINKTABLE")
+CCMXPF_LINKTABLE <- data.table(CCMXPF_LINKTABLE)
+CCMXPF_LINKTABLE <- CCMXPF_LINKTABLE[linktype %in% c("LU","LC","LS") & USEDFLAG=="1"]
+CCMXPF_LINKTABLE <- as.data.frame(CCMXPF_LINKTABLE)
+stargazer(head(CCMXPF_LINKTABLE,10),summary = FALSE,type="text")
+```
+
+
+### Step 3: OPTIONM Identificatoin Information
+OPTIONM.SECNMD provides the mapping from secid to cusip.
+
+```{r optionm, message=FALSE,warning=FALSE,}
+run_query("select * from OPTIONM.SECNMD")
+fetch_last_query(name="SECNMD")
+SECNMD <- SECNMD[,c("secid","cusip","issuer","effect_date")]
+SECNMD <- SECNMD[!duplicated(SECNMD[,c("secid","cusip","issuer")]),]
+SECNMD['cusip_optionm'] <- SECNMD$cusip
+stargazer(head(SECNMD,10),summary = FALSE,type="text")
+```
+
+### Step 4: Merging CRSP, COMPUSTAT and OPTIONM Identification Information
+
+```{r merge, message=FALSE,warning=FALSE,}
+## 4.1 Merge CRSP and COMPUSTAT
+STOCKNAMES_GVKEY <- merge(STOCKNAMES,CCMXPF_LINKTABLE, by.x = c("PERMCO"),by.y=c("lpermco"), all.x = TRUE)
+## 4.2 Remove Duplicates
+STOCKNAMES_GVKEY <- STOCKNAMES_GVKEY[!duplicated(STOCKNAMES_GVKEY[,c("PERMCO","NAMEDT","NAMEENDDT","NCUSIP","gvkey")]),]
+## 4.3 Merge STOCKNAMES_GVKEY with optionm id information
+STOCKNAMES_GVKEY_OPTIONM <- merge(STOCKNAMES_GVKEY,SECNMD,by.x=c("NCUSIP"),by.y = c("cusip"))
+## 4.4 Remove duplicates in the merged data
+STOCKNAMES_GVKEY_OPTIONM <- STOCKNAMES_GVKEY_OPTIONM[!duplicated(STOCKNAMES_GVKEY_OPTIONM[,c("PERMCO","NAMEDT","NAMEENDDT","NCUSIP","gvkey","secid")]),]
+## 4.5 Store unmerged data in a data frame called unmerged
+unmerged <- STOCKNAMES_GVKEY_OPTIONM[is.na(STOCKNAMES_GVKEY_OPTIONM$PERMCO),c("secid","issuer","cusip_optionm","effect_date")]
+unmerged <- unmerged[!duplicated(unmerged),]
+## 4.6 Store merged data in a dataframe called STOCKNAMES_GVKEY_OPTIONM
+STOCKNAMES_GVKEY_OPTIONM <- STOCKNAMES_GVKEY_OPTIONM[!is.na(STOCKNAMES_GVKEY_OPTIONM$PERMCO),]
+
+str(STOCKNAMES_GVKEY_OPTIONM)
+```
+
+
+```{r}
+dbDisconnect(wrds)
+```
+
