@@ -1,0 +1,80 @@
+---
+title: "Determinants of Securities Lending Fees - Preliminary Results"
+date: "August 7, 2017"
+output: 
+  html_document: 
+    css: bodycss.css
+    fig_height: 6
+    fig_width: 12
+    toc: yes
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE,echo = FALSE, fig.align='center')
+```
+
+
+```{r initialize}
+rm(list=ls())
+path = "E:/shortselling"
+setwd(path)
+require(gdata)
+require(dplyr)
+require(zoo)
+require(plyr)
+require(sqldf)
+require(stargazer)
+require(data.table)
+require(ggplot2)
+require(lfe)
+
+output.type="text"
+merged_data <- readRDS(file="E:/shortselling/Data/Processed/Monthly_sample_Aug072017.rds")
+
+
+printtable <- function(reg,column.labels,depvar,note,iv,lines) {
+  stargazer(reg,type=output.type,no.space = TRUE,omit.stat = c("f","rsq","ser"),notes= note,column.labels = column.labels, dep.var.labels = "",dep.var.caption   = paste("Y: ",gsub("_"," ",depvar),"; iv: ",gsub("_"," ",iv)),dep.var.labels.include = FALSE,add.lines = lines)
+}
+
+```
+
+# Descriptive Stats
+
+```{r descriptive_stats}
+
+
+stargazer(merged_data[, c("FEE","LENDABLEQUANTITY","q_assets","q_sales","m_sharevolume","m_equityreturn","equity_ret_variance","option_volume","option_open_interest","max_days_opt_exp","availability_of_options")], type = output.type, summary.stat = c("mean", "sd", "p25", "median", "p75", "n"),notes = "",digits = 4)
+
+```
+
+
+```{r graph}
+
+temp <- ddply(merged_data,.(data_month),summarise,medianfee=median(FEE,na.rm = TRUE),q1fee=quantile(FEE,0.25,na.rm = TRUE),q3fee=quantile(FEE,0.75,na.rm = TRUE))
+# temp$medianfee <- sapply(temp$medianfee, function(x) min(x,0.03))
+# temp$q1fee <- sapply(temp$q1fee, function(x) min(x,0.03))
+temp$q3fee <- sapply(temp$q3fee, function(x) min(x,0.06))
+g1 <- ggplot(temp,aes(x=data_month))+ geom_line(aes(y=temp$medianfee,color="Median"))+ geom_line(aes(y=temp$q1fee,color="Q1"))+ geom_line(aes(y=temp$q3fee,color="Q3"))+labs(y = "Indicative Fee",x = "",colour = NULL)+ theme(legend.position="bottom")+ scale_x_continuous(breaks=2002:2017)#+ylim(0,0.03)
+g1
+```
+
+
+# Baseline Regression
+```{r baselinereg}
+
+
+controls1 <- "a_assets+m_equityreturn+m_sharevolume+equity_ret_variance|data_qtr"
+controls2 <- "a_assets+m_equityreturn+m_sharevolume+equity_ret_variance+option_volume+max_days_opt_exp|data_qtr"
+dependent_var = "I(FEE*1e5)"
+
+
+
+regs <- list()
+regs[[1]] <- felm(as.formula(paste(dependent_var,"~+",controls1,sep="")),data = merged_data)
+regs[[2]] <- felm(as.formula(paste(dependent_var,"~+",controls2,sep="")),data = merged_data)
+
+
+printtable(regs,c(""),depvar = dependent_var,note = c("Fixed Effects: Quarter","Standard Errors clustered by none"),iv="none",list(""))
+```
+

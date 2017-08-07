@@ -1,0 +1,471 @@
+---
+title: "Determinants of Securities Lending Fees - Sample Construction"
+date: "August 7, 2017"
+output: 
+  html_document: 
+    css: bodycss.css
+    fig_height: 6
+    fig_width: 12
+    toc: yes
+---
+
+
+
+```{r initialize,message=FALSE,warning=FALSE}
+rm(list=ls())
+path = "E:/shortselling"
+setwd(path)
+require(gdata)
+require(dplyr)
+require(zoo)
+require(plyr)
+require(sqldf)
+require(stargazer)
+require(data.table)
+
+.jinit(classpath="C:/Users/dnratnadiwakara/Documents/sas.core.jar", parameters="-Xmx4g")
+.jaddClassPath("C:/Users/dnratnadiwakara/Documents/sas.intrnet.javatools.jar")
+
+
+run_and_fetch <- function(sql){
+  fetch(dbSendQuery(wrds,sql),n=-1)
+}
+
+run_query <- function(sql){
+  res <<-dbSendQuery(wrds,sql)
+}
+
+
+fetch_last_query <- function(name="data",rows=-1)  {
+  if(is.null(res)) cat("No res object","\n")
+  eval(parse(text=paste(name," <<- fetch(res, n = ",rows,")",sep="")))
+}
+
+trim <- function (x) gsub("^\\s+|\\s+$", "", x)
+
+
+wrds <- wrdsconnect(user='dimuthu9', pass='{SAS002}4FA9941A27D636B15931DF1E08D4704D')
+```
+
+# Clean Markit Fee Data - Equity
+
+```{r markit_data_merge}
+library(zoo)
+library(data.table)
+path = "E:/shortselling/Data/Raw/WRDS/Markit/Markit Securities Finance Analytics - Equities/splitted"
+
+file_name = paste(path,"/markit_fees_combined.csv",sep="")
+
+# files <- list.files(path=path,pattern = "*.rds",full.names = TRUE)
+# for(fn in files) {
+#   temp <- readRDS(file=fn)
+#   temp <- temp[substr(temp$MarketArea,1,9)=="US Equity",]
+#   temp <- temp[!is.na(temp$IndicativeFee) & temp$IndicativeFee>0,c("DataDate","ISIN","CUSIP","QuantityOnLoan","ValueOnLoan","ShortLoanQuantity","ShortLoanValue","IndicativeFee","IndicativeRebate","ActiveLendableValue","ActiveLendableQuantity","ActiveAvailableValue","ActiveAvailableQuantity")]
+#   write.table(temp,file=file_name,append=TRUE,sep="|",col.names=FALSE,quote=FALSE,row.names = FALSE,na="")
+# }
+# 
+# markit_fees <- read.table(file = file_name,sep = "|",stringsAsFactors = FALSE,fill=TRUE)
+# saveRDS(markit_fees,file=sub('.csv', '.rds', file_name))
+# file.remove(file_name)
+
+markit_fees <- readRDS(file=sub('.csv', '.rds', file_name))
+names(markit_fees) <- c("DataDate","ISIN","CUSIP","QuantityOnLoan","ValueOnLoan","ShortLoanQuantity","ShortLoanValue","IndicativeFee","IndicativeRebate","ActiveLendableValue","ActiveLendableQuantity","ActiveAvailableValue","ActiveAvailableQuantity")
+
+markit_fees$DataDate <- as.Date(markit_fees$DataDate,"%m/%d/%Y")
+markit_fees['data_month'] <- as.yearmon(markit_fees$DataDate)
+markit_fees$CUSIP <- sapply(markit_fees$CUSIP, function(x) substr(x,1,8))
+
+markit_fees <- data.table(markit_fees)
+markit_fees <- markit_fees[, list(FEE = mean(IndicativeFee),LENDABLEQUANTITY = mean(ActiveLendableQuantity,na.rm = TRUE)), by = list(CUSIP,data_month)]
+setkeyv(markit_fees,c('CUSIP','data_month'))
+```
+
+# Entity Identification Information from CRSP
+STOCKNAMES table in CRSP database contains identification information for all the entities in the CRSP database. This step retrieves identification information and stores results in a data frame called STOCKNAMES.
+
+NAMEDT: Start Date of Effective Name<br/>
+NAMEENDDT: End Date of Effective Name <br/>
+NCUSIP: CUSIP Identifier - Historical <br/>
+CUSIP: CUSIP Identifier - Current
+
+```{r stocknames,message=FALSE,warning=FALSE,}
+# run_query("select * from CRSP.STOCKNAMES")
+# fetch_last_query(name="STOCKNAMES")
+# STOCKNAMES <- STOCKNAMES[,c("PERMNO","PERMCO","NAMEDT","NAMEENDDT","CUSIP","NCUSIP","COMNAM","ST_DATE","END_DATE")]
+# STOCKNAMES <- STOCKNAMES[STOCKNAMES$NCUSIP %in% unique(markit_fees$CUSIP),]
+# STOCKNAMES$NAMEENDDT <- as.Date(STOCKNAMES$NAMEENDDT)
+# STOCKNAMES <- STOCKNAMES[STOCKNAMES$NAMEENDDT>="2002-01-01",]
+# STOCKNAMES$NAMEDT <- as.Date(STOCKNAMES$NAMEDT)
+# 
+# STOCKNAMES_monthly <- matrix(nrow = nrow(STOCKNAMES)*200, ncol = 5)
+# rowno = 1
+# pb <- txtProgressBar(min = 1, max = nrow(STOCKNAMES), initial = 1)
+# for(i in 1:nrow(STOCKNAMES)) {
+#   setTxtProgressBar(pb, i)
+#   start=as.yearmon(STOCKNAMES[i,]$NAMEDT)
+#   end=as.yearmon(STOCKNAMES[i,]$NAMEENDDT)
+#   currentmonth = start
+#   while(currentmonth != end) {
+#    currentmonth = currentmonth +1/12
+#    STOCKNAMES_monthly[rowno,] <- c(STOCKNAMES[i,]$PERMNO,STOCKNAMES[i,]$PERMCO,as.Date(currentmonth),STOCKNAMES[i,]$NCUSIP,STOCKNAMES[i,]$COMNAM)
+#    rowno = rowno+1
+#   }
+# }
+# 
+# STOCKNAMES_monthly <- as.data.frame(STOCKNAMES_monthly)
+# names(STOCKNAMES_monthly) <- c("PERMNO","PERMCO","DATE","CUSIP","COMNAME")
+# STOCKNAMES_monthly <- data.frame(lapply(STOCKNAMES_monthly, as.character), stringsAsFactors=FALSE)
+# STOCKNAMES_monthly$PERMNO <- as.numeric(STOCKNAMES_monthly$PERMNO)
+# STOCKNAMES_monthly$PERMCO <- as.numeric(STOCKNAMES_monthly$PERMCO)
+# STOCKNAMES_monthly$DATE <- as.numeric(STOCKNAMES_monthly$DATE)
+# STOCKNAMES_monthly$DATE <- as.Date(STOCKNAMES_monthly$DATE)
+# STOCKNAMES_monthly <- STOCKNAMES_monthly[!is.na(STOCKNAMES_monthly$CUSIP),]
+# 
+# saveRDS(STOCKNAMES_monthly,file="E:/shortselling/Data/Processed/STOCKNAMES_MONTHLY.rds")
+STOCKNAMES <- readRDS(file="E:/shortselling/Data/Processed/STOCKNAMES_MONTHLY.rds")
+STOCKNAMES['data_month'] <- as.yearmon(STOCKNAMES$DATE)
+STOCKNAMES <- STOCKNAMES[,c("PERMCO","data_month","CUSIP")]
+STOCKNAMES <- data.table(STOCKNAMES)
+setkeyv(STOCKNAMES,c('CUSIP','data_month'))
+
+stargazer(head(STOCKNAMES,10),summary = FALSE,type="text")
+```
+
+
+# CRSP to COMPUSTAT Link Table
+CRSP.CCMXPF_LINKTABLE provides linking information between gvkey and permco
+
+Link types are restricted to primary link types and USEDFLAG is restricted to be 1.
+
+
+> Primary Link Types<br/><b>LC:</b> Link research complete (after extensive research by CRSP). Standard connection between databases.<br/><b>LU:</b> Link is unresearched by CRSP. It is established by comparing the Compustat and historical CRSP CUSIPs. LU represents the most popular link type.<br/><b>LS:</b> Link valid for this security only. Other CRSP PERMNOs with the same PERMCO will link to other GVKEYs. LS links mainly relate to ETFs where a single CRSP PERMCO links to multiple Compustat GVKEYs. In Compustat, even though they may belong to the same investment company (e.g. ISHARES), ETFs are presented with different GVKEYs and CRSP flags this situation.<br/><b>USEDFLAG</b> item notes if a link was used to to build a composite GVKEY record corresponding to the PERMNO. It originates from the CCMXPFLNKUSED table and is therefore CRSP-centric. It may be helpful in cases of multiple securities to establish a connection between all securities involved, even those not directly linked<br/><br/> More info https://wrds-web.wharton.upenn.edu/wrds/support/Data/_001Manuals%20and%20Overviews/_002CRSP/ccm-overview.cfm#section09
+
+```{r ccm_xpf,message=FALSE,warning=FALSE,}
+# run_query("select * from CRSP.CCMXPF_LINKTABLE")
+# fetch_last_query(name="CCMXPF_LINKTABLE")
+# CCMXPF_LINKTABLE <- data.table(CCMXPF_LINKTABLE)
+# CCMXPF_LINKTABLE <- CCMXPF_LINKTABLE[linktype %in% c("LU","LC","LS") & USEDFLAG=="1"]
+# CCMXPF_LINKTABLE <- as.data.frame(CCMXPF_LINKTABLE)
+# CCMXPF_LINKTABLE <- CCMXPF_LINKTABLE[CCMXPF_LINKTABLE$lpermco %in% unique(STOCKNAMES$PERMCO),]
+# CCMXPF_LINKTABLE$linkenddt <- ifelse(is.na(CCMXPF_LINKTABLE$linkendd),"2017-08-01",CCMXPF_LINKTABLE$linkenddt)
+# CCMXPF_LINKTABLE$linkenddt <- as.Date(CCMXPF_LINKTABLE$linkenddt)
+# CCMXPF_LINKTABLE <- CCMXPF_LINKTABLE[CCMXPF_LINKTABLE$linkenddt>="2002-01-01",]
+# CCMXPF_LINKTABLE$linkdt <- as.Date(CCMXPF_LINKTABLE$linkdt)
+# 
+# 
+# 
+# link_monthly <- matrix(nrow = nrow(CCMXPF_LINKTABLE)*200, ncol = 4)
+# rowno = 1
+# pb <- txtProgressBar(min = 1, max = nrow(CCMXPF_LINKTABLE), initial = 1)
+# for(i in 1:nrow(CCMXPF_LINKTABLE)) {
+#   setTxtProgressBar(pb, i)
+#   start=as.yearmon(CCMXPF_LINKTABLE[i,]$linkdt)
+#   start=max(start,as.yearmon(as.Date("2002-01-01")))
+#   end=as.yearmon(CCMXPF_LINKTABLE[i,]$linkenddt)
+#   currentmonth = start
+#   while(currentmonth != end) {
+#    currentmonth = currentmonth +1/12
+#    link_monthly[rowno,] <- c(CCMXPF_LINKTABLE[i,]$lpermco,CCMXPF_LINKTABLE[i,]$lpermno,as.Date(currentmonth),CCMXPF_LINKTABLE[i,]$gvkey)
+#    rowno = rowno+1
+#   }
+# }
+# 
+# link_monthly <- as.data.frame(link_monthly)
+# names(link_monthly) <- c("PERMCO","PERMNO","DATE","GVKEY")
+# link_monthly <- data.frame(lapply(link_monthly, as.character), stringsAsFactors=FALSE)
+# link_monthly$PERMCO <- as.numeric(link_monthly$PERMCO)
+# link_monthly$PERMNO <- as.numeric(link_monthly$PERMNO)
+# link_monthly$DATE <- as.Date(as.numeric(link_monthly$DATE))
+# link_monthly <- link_monthly[!is.na(link_monthly$PERMCO),]
+# saveRDS(link_monthly,file="E:/shortselling/Data/Processed/LINKDATA_MONTHLY.rds")
+
+LINKDATA <- readRDS(file="E:/shortselling/Data/Processed/LINKDATA_MONTHLY.rds")
+LINKDATA['data_month']<-as.yearmon(LINKDATA$DATE)
+LINKDATA <- LINKDATA[,c("PERMCO","data_month","GVKEY")]
+
+LINKDATA <- data.table(LINKDATA)
+setkeyv(LINKDATA,c('PERMCO','data_month'))
+
+stargazer(head(LINKDATA,10),summary = FALSE,type="text")
+
+```
+
+
+# OPTIONM Identificatoin Information
+OPTIONM.SECNMD provides the mapping from secid to cusip.
+
+```{r optionm, message=FALSE,warning=FALSE,}
+# run_query("select * from OPTIONM.SECNMD")
+# fetch_last_query(name="SECNMD")
+# SECNMD <- SECNMD[,c("secid","cusip","issuer","effect_date")]
+# SECNMD <- SECNMD[!duplicated(SECNMD[,c("secid","cusip","issuer")]),]
+# SECNMD['cusip_optionm'] <- SECNMD$cusip
+# SECNMD <- SECNMD[SECNMD$cusip %in% unique(markit_fees$CUSIP),]
+# SECNMD$effect_date <- as.Date(SECNMD$effect_date)
+# 
+# SECNMD_MONTHLY <- matrix(nrow = nrow(SECNMD)*200, ncol = 3)
+# 
+# pb <- txtProgressBar(min = 1, max = length(secids), initial = 1)
+# rowno = 1
+# ind = 1
+# secids <- unique(SECNMD$secid)
+# for(secid in secids) {
+#   setTxtProgressBar(pb, ind)
+#   ind = ind+1
+#   temp <- SECNMD[SECNMD$secid==secid,]
+#   if(nrow(temp)==1) {
+#     start <- temp[1,]$effect_date
+#     start <- as.yearmon(max(start,as.Date("2002-01-01")))
+#     end <- as.yearmon(as.Date("2017-08-01"))
+#     
+#     currentmonth = start
+#     while(currentmonth != end) {
+#      currentmonth = currentmonth +1/12
+#      SECNMD_MONTHLY[rowno,] <- c(secid,temp[1,]$cusip,as.Date(currentmonth))
+#      rowno = rowno+1
+#     }
+#     
+#   } else {
+#     temp <- temp[order(temp$effect_date),]
+#     temp['end_date'] <- NA
+#     
+#     for(j in 1:(nrow(temp)-1)) {
+#      temp[j,]$end_date <- temp[(j+1),]$effect_date
+#     }
+#     
+#     temp$end_date <- ifelse(is.na(temp$end_date),as.Date("2017-08-01"),temp$end_date)
+#     temp$end_date <- as.Date(temp$end_date)
+#     temp <- temp[temp$end_date>"2002-01-01",]
+#     for(j in 1:nrow(temp)) {
+#       start <- temp[j,]$effect_date
+#       start <- as.yearmon(max(start,as.Date("2002-01-01")))
+#       end <- as.yearmon(temp[j,]$end_date)
+#       
+#       currentmonth = start
+#       while(currentmonth != end) {
+#        currentmonth = currentmonth +1/12
+#        SECNMD_MONTHLY[rowno,] <- c(secid,temp[j,]$cusip,as.Date(currentmonth))
+#        rowno = rowno+1
+#       }
+#     }
+#     
+#   }
+# }
+# 
+# SECNMD_MONTHLY <- as.data.frame(SECNMD_MONTHLY)
+# names(SECNMD_MONTHLY) <- c("SECID","CUSIP","DATE")
+# SECNMD_MONTHLY <- data.frame(lapply(SECNMD_MONTHLY, as.character), stringsAsFactors=FALSE)
+# SECNMD_MONTHLY$SECID <- as.numeric(SECNMD_MONTHLY$SECID)
+# SECNMD_MONTHLY$DATE <- as.Date(as.numeric(SECNMD_MONTHLY$DATE))
+# SECNMD_MONTHLY <- SECNMD_MONTHLY[!is.na(SECNMD_MONTHLY$SECID),]
+# saveRDS(SECNMD_MONTHLY,file="E:/shortselling/Data/Processed/SECNMD_MONTHLY.rds")
+
+SECNMD_MONTHLY <- readRDS(file="E:/shortselling/Data/Processed/SECNMD_MONTHLY.rds")
+SECNMD_MONTHLY['data_month'] <- as.yearmon(SECNMD_MONTHLY$DATE)
+SECNMD_MONTHLY <- SECNMD_MONTHLY[,c("SECID","CUSIP","data_month")]
+
+SECNMD_MONTHLY <- data.table(SECNMD_MONTHLY)
+setkeyv(SECNMD_MONTHLY,c('CUSIP','data_month'))
+
+stargazer(head(SECNMD_MONTHLY,10),summary = FALSE,type="text")
+```
+
+
+# Merge identification information with shorting fees
+```{r merge_id_info_with_markit}
+
+merged <- merge(markit_fees,STOCKNAMES,by=c("CUSIP","data_month"),all.x = TRUE)
+merged <- merge(merged,LINKDATA,by=c("PERMCO","data_month"),all.x = TRUE)
+merged <- merge(merged,SECNMD_MONTHLY,by=c("CUSIP","data_month"),all.x = TRUE)
+
+merged <- merged[!(is.na(merged$GVKEY) & is.na(merged$SECID) & is.na(merged$PERMCO)),]
+merged[,'data_qtr'] <- as.yearqtr(merged$data_month)
+merged[,'data_year'] <- as.numeric(format(as.Date(merged$data_month),"%Y"))
+setkeyv(merged,c('CUSIP','data_qtr','data_year'))
+
+```
+
+# COMPUSTAT Quarterly Variables
+
+```{r compustat_q_vars}
+# libraries <- run_and_fetch("select distinct libname from dictionary.tables")
+# databases <- run_and_fetch("select distinct memname from dictionary.columns where libname='OPTIONM'")
+
+gvkeys <- paste("'",as.character(unique(LINKDATA$GVKEY)),"'",collapse=", ",sep="")
+run_query(paste("select fyearq,fqtr,atq as q_assets,EPSPXQ as q_eps, ltq as q_liabilities, saleq as q_sales,cusip as CUSIP,conm,gvkey as GVKEY from COMPM.FUNDQ where gvkey in (",gvkeys,") & fyearq>=2002",sep=""))
+fetch_last_query(name="COMPUSTAT_Q")
+
+COMPUSTAT_Q$fqtr <- COMPUSTAT_Q$fqtr*3
+COMPUSTAT_Q['data_qtr'] <- as.yearqtr(as.Date(paste(COMPUSTAT_Q$fyearq,COMPUSTAT_Q$fqtr,"01",sep="-")))
+COMPUSTAT_Q$CUSIP <- sapply(COMPUSTAT_Q$CUSIP, function(x) substr(x,1,8))
+
+COMPUSTAT_Q <- COMPUSTAT_Q[!duplicated(COMPUSTAT_Q[,c("GVKEY","data_qtr")]),]
+COMPUSTAT_Q <- COMPUSTAT_Q[,names(COMPUSTAT_Q)[!names(COMPUSTAT_Q) %in% c("fyearq","fqtr","conm","GVKEY")]]
+
+
+COMPUSTAT_Q <- data.table(COMPUSTAT_Q)
+setkeyv(COMPUSTAT_Q,c('CUSIP','data_qtr'))
+
+stargazer(head(COMPUSTAT_Q,10),summary = FALSE,type="text")
+
+```
+
+# COMPUSTAT Annual Variables
+```{r compustat_a_vars}
+# libraries <- run_and_fetch("select distinct libname from dictionary.tables")
+# databases <- run_and_fetch("select distinct memname from dictionary.columns where libname='OPTIONM'")
+
+gvkeys <- paste("'",as.character(unique(LINKDATA$GVKEY)),"'",collapse=", ",sep="")
+run_query(paste("select AT as a_assets,LT as a_liabilities, EPSPX as a_eps, SALE as a_sales, FYEAR as data_year,cusip as CUSIP,gvkey as GVKEY from COMPM.FUNDA where gvkey in (",gvkeys,") & FYEAR>=2002",sep=""))
+fetch_last_query(name="COMPUSTAT_A")
+
+COMPUSTAT_A$CUSIP <- sapply(COMPUSTAT_A$CUSIP, function(x) substr(x,1,8))
+COMPUSTAT_A <- COMPUSTAT_A[,names(COMPUSTAT_A)[!names(COMPUSTAT_A) %in% c("CUSIP")]]
+COMPUSTAT_A <- COMPUSTAT_A[!(is.na(COMPUSTAT_A$a_assets) & is.na(COMPUSTAT_A$a_sales)),]
+COMPUSTAT_A <- COMPUSTAT_A[!duplicated(COMPUSTAT_A[,c("GVKEY","data_year")]),]
+
+COMPUSTAT_A <- data.table(COMPUSTAT_A)
+setkeyv(COMPUSTAT_A,c('GVKEY','data_year'))
+
+stargazer(head(COMPUSTAT_A,10),summary = FALSE,type="text")
+
+```
+
+# Merge COMPUSTAT with Fee data
+```{r merge_compustat_fee}
+merged <- merge(merged,COMPUSTAT_Q,by=c("CUSIP","data_qtr"),all.x = TRUE)
+merged <- merge(merged,COMPUSTAT_A,by=c("GVKEY","data_year"),all.x = TRUE)
+```
+
+
+# CRSP Monthly Variables
+
+```{r crsp_vars_monthly}
+permcos <- paste("",as.character(unique(STOCKNAMES$PERMCO)),"",collapse=", ",sep="")
+
+run_query(paste("select DATE,VOL as m_sharevolume,RET as m_equityreturn,CUSIP as CUSIP,PERMCO  from CRSPA.MSF where PERMCO in (",permcos,") & year(DATE)>=2002 ",sep=""))
+fetch_last_query(name="CRSP_M",rows = -1)
+
+CRSP_M['data_month'] <- as.yearmon(as.Date(CRSP_M$DATE))
+CRSP_M <- CRSP_M[!duplicated(CRSP_M[,c("PERMCO","data_month","CUSIP")]),]
+CRSP_M <- CRSP_M[,names(CRSP_M)[!names(CRSP_M) %in% c("PERMCO","DATE")]]
+CRSP_M <- CRSP_M[!(is.na(CRSP_M$m_sharevolume) & is.na(CRSP_M$m_equityreturn)),]
+
+CRSP_M <- data.table(CRSP_M)
+setkeyv(CRSP_M,c('CUSIP','data_month'))
+
+stargazer(head(CRSP_M,10),summary = FALSE,type="text")
+```
+
+
+# CRSP Daily Variables
+```{r crsp_vars_daily}
+permcos <- paste("",as.character(unique(STOCKNAMES$PERMCO)),"",collapse=", ",sep="")
+
+# run_query(paste("select DATE,RET,CUSIP,PERMCO  from CRSPA.DSF where PERMCO in (7953) & year(DATE)>=2002 ",sep=""))
+# fetch_last_query(name="CRSP_DAILY",rows = -1)
+
+run_query(paste("select VAR(RET) as equity_ret_variance,min(CUSIP) as CUSIP,min(year(DATE)) as year,min(month(DATE)) as month  from CRSPA.DSF where PERMCO in (",permcos,") & year(DATE)>=2002 group by PERMCO,CUSIP,year(DATE),month(DATE)",sep=""))
+fetch_last_query(name="CRSP_DAILY",rows = -1)
+
+
+CRSP_DAILY['data_month'] <- as.yearmon(as.Date(paste(CRSP_DAILY$year,CRSP_DAILY$month,"01",sep="-")))
+CRSP_DAILY <- CRSP_DAILY[!(is.na(CRSP_DAILY$equity_ret_variance) ),]
+CRSP_DAILY <- CRSP_DAILY[!duplicated(CRSP_DAILY[,c("CUSIP","data_month")]),]
+CRSP_DAILY <- CRSP_DAILY[,names(CRSP_DAILY)[!names(CRSP_DAILY) %in% c("year","month")]]
+
+CRSP_DAILY <- data.table(CRSP_DAILY)
+setkeyv(CRSP_DAILY,c('CUSIP','data_month'))
+
+stargazer(head(CRSP_DAILY,10),summary = FALSE,type="text")
+```
+
+# Merge CRSP with Fee data
+```{r merge_crsp_fee}
+merged <- merge(merged,CRSP_M,by=c("CUSIP","data_month"),all.x = TRUE)
+merged <- merge(merged,CRSP_DAILY,by=c("CUSIP","data_month"),all.x = TRUE)
+```
+
+# OPTIONM Volume
+
+```{r optionm_opvold}
+secids <- paste("",as.character(unique(SECNMD_MONTHLY$SECID)),"",collapse=", ",sep="")
+
+# testing secid = 207283
+
+# run_query(paste("select secid,date,cp_flag,volume,open_interest from optionm.opvold  where secid in (",207283,") & year(date)>=2002 & cp_flag in ('C','P') ",sep=""))
+# fetch_last_query(name="OPTION_VOLUME",rows = -1)
+# OPTION_VOLUME$date <- as.Date(OPTION_VOLUME$date)
+# OPTION_VOLUME['MONTH'] <- as.yearmon(OPTION_VOLUME$date)
+# OPTION_VOLUME <- data.table(OPTION_VOLUME)
+# OPTION_VOLUME <- OPTION_VOLUME[, list(VOLUME = sum(volume,na.rm = TRUE),OPEN_INTEREST=sum(open_interest,na.rm = TRUE)), by = list(secid,MONTH,cp_flag)]
+
+run_query(paste("select min(secid) as secid,sum(volume) as option_volume,sum(open_interest) as option_open_interest,min(year(date)) as year, min(month(date)) as month from optionm.opvold  where secid in (",secids,") & year(date)>=2002 & cp_flag not in ('C','P') group by secid,year(date),month(date)",sep=""))
+fetch_last_query(name="OPTION_VOLUME",rows = -1)
+
+OPTION_VOLUME['data_month'] <- as.yearmon(as.Date(paste(OPTION_VOLUME$year,OPTION_VOLUME$month,"01",sep="-")))
+OPTION_VOLUME <- OPTION_VOLUME[!(is.na(OPTION_VOLUME$option_open_interest) & is.na(OPTION_VOLUME$option_volume)),]
+OPTION_VOLUME <- OPTION_VOLUME[!duplicated(OPTION_VOLUME[,c("secid","data_month")]),]
+OPTION_VOLUME['SECID'] <- OPTION_VOLUME$secid
+OPTION_VOLUME <- OPTION_VOLUME[,names(OPTION_VOLUME)[!names(OPTION_VOLUME) %in% c("year","month","secid")]]
+
+OPTION_VOLUME <- data.table(OPTION_VOLUME)
+setkeyv(OPTION_VOLUME,c('SECID','data_month'))
+
+stargazer(head(OPTION_VOLUME,10),summary = FALSE,type="text")
+```
+
+
+# OPTIONM Standardized Options
+
+```{r optionm_stdopd}
+secids <- paste("",as.character(unique(SECNMD_MONTHLY$SECID)),"",collapse=", ",sep="")
+
+# testing secid = 207283
+
+
+# run_query(paste("select * from optionm.",database[14]," where secid in (",207283,") & year(date)>=2002  ",sep=""))
+# fetch_last_query(name="OPTION_DAYS",rows = -1)
+
+
+OPTION_DAYS <- NULL
+years <- c(2002:2016)
+for(yr in years) {
+  run_query(paste("select min(secid) as secid,min(year(date)) as year, min(month(date)) as month,max(days) as max_days_opt_exp from optionm.stdopd",yr,"  where secid in (",secids,") group by secid,year(date),month(date)",sep=""))
+  fetch_last_query(name=paste("OPTION_DAYS",yr,sep=""),rows = -1)
+  eval(parse(text=paste("OPTION_DAYS <- rbind(OPTION_DAYS,OPTION_DAYS",yr,")",sep="")))
+  eval(parse(text=paste("rm(OPTION_DAYS",yr,")",sep="")))
+}
+
+OPTION_DAYS['data_month'] <- as.yearmon(as.Date(paste(OPTION_DAYS$year,OPTION_DAYS$month,"01",sep="-")))
+OPTION_DAYS <- OPTION_DAYS[!(is.na(OPTION_DAYS$max_days_opt_exp)),]
+OPTION_DAYS <- OPTION_DAYS[!duplicated(OPTION_DAYS[,c("secid","data_month")]),]
+OPTION_DAYS['SECID'] <- OPTION_DAYS$secid
+OPTION_DAYS <- OPTION_DAYS[,names(OPTION_DAYS)[!names(OPTION_DAYS) %in% c("year","month","secid")]]
+
+OPTION_DAYS <- data.table(OPTION_DAYS)
+setkeyv(OPTION_DAYS,c('SECID','data_month'))
+
+stargazer(head(OPTION_DAYS,10),summary = FALSE,type="text")
+```
+
+
+# Merge OPTIONMATRIX with Fee data
+```{r merge_optionm_fee}
+merged <- merge(merged,OPTION_VOLUME,by=c("SECID","data_month"),all.x = TRUE)
+merged <- merge(merged,OPTION_DAYS,by=c("SECID","data_month"),all.x = TRUE)
+```
+
+# Clean Merged Data
+
+```{r clean_merged_data}
+merged[,'availability_of_options'] <- ifelse(is.na(merged$option_volume),0,1)
+saveRDS(merged,file="E:/shortselling/Data/Processed/Monthly_sample_Aug072017.rds")
+str(merged)
+```
+
+
+```{r}
+dbDisconnect(wrds)
+```
+
