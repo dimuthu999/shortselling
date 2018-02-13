@@ -1,0 +1,182 @@
+---
+title: "Calculating Moments"
+author: "Dimuthu Ratnadiwakara"
+date: "December 6, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+rm(list=ls())
+path = "E:/shortselling"
+library(fOptions)
+setwd(path)
+
+op_data <- as.data.frame(readRDS(file="E:/shortselling/Data/Processed/op_moments_sample_data.rds"))
+op_data$strike_price <- op_data$strike_price/1000
+op_data$exdate <- as.Date(as.character(op_data$exdate))
+op_data['time_to_maturity'] <- as.numeric(op_data$exdate - op_data$date)
+op_data['k_s'] <- op_data$strike_price/op_data$close
+op_data <- op_data[op_data$time_to_maturity>7,]
+op_data <- op_data[op_data$k_s<=0.97 | op_data$k_s>=1.03,]
+
+
+zerocd   <- read.csv(file="E:/shortselling/Data/Processed/zerocd.csv",stringsAsFactors = FALSE)
+zerocd$date <- as.Date(zerocd$date,format = "%m/%d/%Y")
+
+
+blackscholes <- function(S, X, rf, T, sigma,type) {
+    value <- NA
+ 
+    d1 <- (log(S/X)+(rf+sigma^2/2)*T)/(sigma*sqrt(T))
+    d2 <- d1 - sigma * sqrt(T)
+ 
+    if(type=="c") value <- S*pnorm(d1) - X*exp(-rf*T)*pnorm(d2)
+    if(type=="p") value <- X*exp(-rf*T) * pnorm(-d2) - S*pnorm(-d1)
+ 
+    value
+}
+```
+
+```{r}
+dates <- unique(op_data$date)
+secids <- unique(op_data$secid)
+
+secid = secids[1]
+date = dates[1]
+
+    
+    temp <- op_data[op_data$secid==secid & op_data$date == date,]
+    temp <- temp[!is.na(temp$impl_volatility) & !is.na(temp$k_s),]
+    
+    if(nrow(temp) <=4) next
+    
+    
+    summary_calls <- ddply(temp[temp$cp_flag=="C",],.(time_to_maturity),summarise,count_calls=length(secid))
+    summary_puts <-  ddply(temp[temp$cp_flag=="P",],.(time_to_maturity),summarise,count_puts=length(secid))
+    summary_calls <- merge(summary_calls,summary_puts,by="time_to_maturity")
+    summary_calls <- summary_calls[summary_calls$count_calls>=2 & summary_calls$count_puts>=2,]
+    
+    temp <- temp[temp$time_to_maturity %in% unique(summary_calls$time_to_maturity),]
+    
+    if(max(temp$time_to_maturity)<30 | min(temp$time_to_maturity) > 30) next
+    
+    underlying_price <- temp[1,]$close
+    
+    days <- unique(temp$time_to_maturity)
+  
+    im_vol_data <- matrix(nrow = 3000,ncol=1)
+    im_vol_data[,1] <- seq(from = 1/1000, to=3, by=1/1000)
+    im_vol_data <- as.data.frame(im_vol_data)
+    names(im_vol_data)[1] <- "moneyness"
+    
+    # calls
+    im_vol <- c(0.390866,0.371362,0.367931,	0.36741,	0.367337,	0.368023,	0.402593,	0.430668,	0.431243,	0.431619,	0.432937,	0.437908,	0.45404)
+    k_s <- c(30.12451,29.43635,	28.95158,	28.52772,	28.13356,	27.75881,	27.42296,	27.02665,	26.60306,	26.17151,	25.72096,	25.22633,	24.62091)/underlying_price
+    spline <- smooth.spline(x =  k_s,y = im_vol)
+    k_s_x <- im_vol_data[,1]
+    k_s_x <- ifelse(k_s_x<=max(0,min(k_s)),max(0,min(k_s)),ifelse(k_s_x>=min(3,max(k_s)),min(3,max(k_s)),k_s_x))
+    im_vol_data['C_iv_30'] <- predict(spline,x = k_s_x)$y
+    
+    
+    # puts
+    im_vol <- c(0.372682,	0.37074,	0.370113,	0.369915,	0.369861,	0.370624,	0.406748,	0.432692,	0.433169,	0.433465,	0.434688,	0.440073,	0.460037)
+    k_s <- c(29.94631,	29.41089,	28.94661,	28.52484,	28.13039,	27.755,	27.41964,	27.02068,	26.59617,	26.16373,	25.71228,	25.21482,	24.58842)/underlying_price
+    spline <- smooth.spline(x =  k_s,y = im_vol)
+    k_s_x <- im_vol_data[,1]
+    k_s_x <- ifelse(k_s_x<=max(0,min(k_s)),max(0,min(k_s)),ifelse(k_s_x>=min(3,max(k_s)),min(3,max(k_s)),k_s_x))
+    im_vol_data['P_iv_30'] <- predict(spline,x = k_s_x)$y
+    
+    im_vol_data['k'] <- underlying_price*im_vol_data$moneyness
+    
+    
+    maturity = 30 
+    
+      zerocd_tmp <- zerocd[zerocd$date==date,]
+
+      r_lb <- max(zerocd_tmp[zerocd_tmp$days<=maturity,]$days)
+      r_ub <- min(zerocd_tmp[zerocd_tmp$days>=maturity,]$days)
+     
+      if(is.finite(r_lb) & is.finite(r_ub)) {
+        rate = zerocd_tmp[zerocd_tmp$days==r_lb,]$rate + (zerocd_tmp[zerocd_tmp$days==r_ub,]$rate - zerocd_tmp[zerocd_tmp$days==r_lb,]$rate)* (maturity - r_lb)/max(1,(r_ub - r_lb))
+      }
+      if(!is.finite(r_lb)) rate = zerocd_tmp[zerocd_tmp$days==r_ub,]$rate
+      if(!is.finite(r_ub)) rate = zerocd_tmp[zerocd_tmp$days==r_lb,]$rate
+    
+      rate = rate/100
+
+      eval(parse(text=paste("im_vol_data['C_price_",maturity,"']<- blackscholes(underlying_price,im_vol_data$k,rate,maturity/365,im_vol_data$C_iv_",maturity,",'c')",sep="")))
+      
+      eval(parse(text=paste("im_vol_data['P_price_",maturity,"']<- blackscholes(underlying_price,im_vol_data$k,rate,maturity/365,im_vol_data$C_iv_",maturity,",'p')",sep="")))
+      
+      
+      # eval(parse(text=paste("im_vol_data$C_price_",maturity," <- ifelse(abs(im_vol_data$C_price_",maturity,")<1e-30 | !is.finite(im_vol_data$C_price_",maturity,") | is.na(im_vol_data$C_price_",maturity,"),0,im_vol_data$C_price_",maturity,")",sep="")))
+      # eval(parse(text=paste("im_vol_data$P_price_",maturity," <- ifelse(abs(im_vol_data$P_price_",maturity,")<1e-30 | !is.finite(im_vol_data$P_price_",maturity,") | is.na(im_vol_data$P_price_",maturity,"),0,im_vol_data$P_price_",maturity,")",sep="")))
+      # 
+      # 
+      print(maturity)
+      print(rate)
+      tau = maturity/365
+      RfTau = exp(rate*tau)
+
+      
+      
+      
+      
+
+      temp_C <- im_vol_data[im_vol_data$k>=underlying_price,]
+      temp_C['inTerm'] = log(temp_C$k/underlying_price)
+      temp_C['weights'] = 2 * (1-temp_C$inTerm)/(temp_C$k^2)
+      temp_C['term1'] <- temp_C[paste("C_price_",maturity,sep="")]*temp_C$weights
+      
+      temp_P <- im_vol_data[im_vol_data$k<=underlying_price,]
+      temp_P['inTerm'] = log(underlying_price/temp_P$k)
+      temp_P['weights'] = 2 * (1+temp_P$inTerm)/(temp_P$k^2)
+      temp_P['term1'] <- temp_P[paste("P_price_",maturity,sep="")]*temp_P$weights        
+      
+      VTau <- trapz(temp_C$k,temp_C$term1) + trapz(temp_P$k,temp_P$term1)
+      print(VTau)
+      
+      
+      
+      
+      temp_C <- im_vol_data[im_vol_data$k>=underlying_price,]
+      temp_C['inTerm'] = log(temp_C$k/underlying_price)
+      temp_C['weights'] = (6*temp_C$inTerm - 3*(temp_C$inTerm^2))/(temp_C$k^2)
+      temp_C['term1'] <- temp_C[paste("C_price_",maturity,sep="")]*temp_C$weights
+      
+      temp_P <- im_vol_data[im_vol_data$k<=underlying_price,]
+      temp_P['inTerm'] = log(underlying_price/temp_P$k)
+      temp_P['weights'] = (6*temp_P$inTerm + 3*(temp_P$inTerm^2))/(temp_P$k^2)
+      temp_P['term1'] <- temp_P[paste("P_price_",maturity,sep="")]*temp_P$weights
+
+      WTau <- trapz(temp_C$k,temp_C$term1) - trapz(temp_P$k,temp_P$term1)
+      print(WTau)
+      
+      
+      
+      temp_C <- im_vol_data[im_vol_data$k>=underlying_price,]
+      temp_C['inTerm'] = log(temp_C$k/underlying_price)
+      temp_C['weights'] = (12*(temp_C$inTerm^2) - 4*(temp_C$inTerm^3))/(temp_C$k^2)
+      temp_C['term1'] <- temp_C[paste("C_price_",maturity,sep="")]*temp_C$weights
+      
+      temp_P <- im_vol_data[im_vol_data$k<=underlying_price,]
+      temp_P['inTerm'] = log(underlying_price/temp_P$k)
+      temp_P['weights'] = (12*(temp_P$inTerm^2) + 4*(temp_P$inTerm^3))/(temp_P$k^2)
+      temp_P['term1'] <- temp_P[paste("P_price_",maturity,sep="")]*temp_P$weights
+
+      XTau <- trapz(temp_C$k,temp_C$term1) + trapz(temp_P$k,temp_P$term1)
+      print(XTau)
+      
+      muTau = RfTau - 1 - (RfTau/2)*VTau - (RfTau/6)*WTau - (RfTau/24)*XTau
+      print(muTau)
+      
+      sigTotal = RfTau*VTau - muTau^2
+      print(sigTotal)
+      
+
+```
+

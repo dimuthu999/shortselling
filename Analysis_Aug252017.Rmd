@@ -1,0 +1,268 @@
+---
+title: "Clean and Merge Markit, FISD and TRACE"
+date: "July 11, 2017"
+output:
+  html_document:
+    css: bodycss.css
+    fig_width: 8
+    font-family: Helvetica,Arial,sans-serif;
+    number_section: yes
+    toc: yes
+  pdf_document:
+    toc: yes
+  word_document:
+    toc: yes
+linestretch: 2
+bibliography: C:\Users\dnratnadiwakara\OneDrive\library.bib
+---
+
+<style type="text/css">
+body{ 
+      font-size: 15px;
+      font-family: Helvetica,Arial,sans-serif;
+      line-height: 200%;
+  }
+  
+.author {
+ font-size: 15px;
+ color: Black;
+ font-style: normal;
+ text-align: center;
+}
+
+
+.date { 
+ font-size: 15px;
+ color: Black;
+ font-style: normal;
+ text-align: center;
+}
+
+.title{
+  text-align: center;
+  font-size: 15px;
+ color: Black;
+ 
+}
+
+.toc-ignore{
+  text-align: center;
+  font-size: 15px;
+ color: Black;
+}
+
+.fluid-row{
+  text-align: center;
+  font-size: 15px;
+ color: Black;
+}
+
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE,echo = FALSE, fig.align='center')
+```
+
+
+
+```{r initialize,message=FALSE,warning=FALSE}
+rm(list=ls())
+path = "E:/shortselling"
+setwd(path)
+require(gdata)
+require(dplyr)
+require(zoo)
+require(plyr)
+require(sqldf)
+require(stargazer)
+require(data.table)
+require(lubridate)
+require(lfe)
+library(np)
+library(ggplot2)
+
+output.type="text"
+
+ssf_data <- readRDS(file="E:/shortselling/Data/Processed/Monthly_sample_Aug172017.rds")
+ssf_data['data_date'] <- as.Date(ssf_data$data_month)
+ssf_data['min_option_date'] <- as.Date(ssf_data$min_option_date)
+
+# save(t,file="SECIDs_withshortfees.rda")
+```
+
+# Descriptives
+```{r descs}
+
+stargazer(ssf_data[, c("IndicativeFee","UtilisationByQuantity","DCBS","LenderQuantityOnLoan","LendableQuantity")], type = output.type, summary.stat = c("mean", "sd", "p25", "median", "p75", "n"),notes = "",digits = 4)
+```
+
+```{r diff_in_diff}
+
+temp <- ssf_data[(ssf_data$data_date<= ssf_data$min_option_date+90 & ssf_data$data_date>= ssf_data$min_option_date+0) | (ssf_data$data_date>= ssf_data$min_option_date-90 & ssf_data$data_date<= ssf_data$min_option_date-0),]
+temp['option'] <- ifelse(temp$data_date>= temp$min_option_date,1,0)
+temp <- temp[!is.na(temp$data_month),]
+option_secids <- unique(temp[temp$option==1,]$SECID)
+nooption_secids <- unique(temp[temp$option==0,]$SECID)
+secids <- intersect(option_secids,nooption_secids)
+temp <- temp[temp$SECID %in% secids,]
+regs <- list()
+regs[[1]] <- felm(as.formula("IndicativeFee~option|0|0|CUSIP"),data=temp)
+regs[[2]] <- felm(as.formula("IndicativeFee~option+log(q_assets)+UtilisationByQuantity+AverageTenure+equity_ret_variance+m_equityreturn|0|0|CUSIP"),data=temp)
+
+stargazer(regs,type = output.type,no.space = TRUE,dep.var.caption = "Dependent Var: Indicative Fee",dep.var.labels = c("",""))
+```
+
+
+
+```{r option}
+
+temp <- ssf_data[ssf_data$IndicativeFee>=0.12,]
+temp <- temp[is.na(temp$min_option_date) | temp$data_date>= temp$min_option_date, ]
+temp['option'] <- ifelse(temp$data_date< temp$min_option_date | is.na(temp$min_option_date),0,1)
+temp <- temp[!is.na(temp$data_month),]
+temp <- temp[is.finite(log(temp$q_assets)),]
+
+regs <- list()
+regs[[1]] <- felm(as.formula("IndicativeFee~option|data_month|0|CUSIP"),data=temp)
+regs[[2]] <- felm(as.formula("IndicativeFee~option+log(q_assets)+UtilisationByQuantity+AverageTenure+equity_ret_variance+m_equityreturn|data_month|0|CUSIP"),data=temp)
+
+stargazer(regs,type = output.type,no.space = TRUE,dep.var.caption = "Dependent Var: Indicative Fee",dep.var.labels = c("",""))
+```
+
+
+
+
+```{r put_premium}
+
+temp <- ssf_data
+temp <- temp[is.na(temp$min_option_date) | temp$data_date>= temp$min_option_date, ]
+temp['option'] <- ifelse(temp$data_date< temp$min_option_date | is.na(temp$min_option_date),0,1)
+temp <- temp[!is.na(temp$data_month),]
+temp <- temp[is.finite(log(temp$put_impl_premium)),]
+
+regs <- list()
+regs[[1]] <- felm(as.formula("IndicativeFee~log(put_impl_premium)|data_month|0|CUSIP"),data=temp)
+regs[[2]] <- felm(as.formula("IndicativeFee~log(put_impl_premium)+log(q_assets)+UtilisationByQuantity+AverageTenure+equity_ret_variance+m_equityreturn|data_month|0|CUSIP"),data=temp)
+regs[[3]] <- felm(as.formula("IndicativeFee~log(put_impl_premium)|data_month|0|CUSIP"),data=temp[temp$IndicativeFee>=quantile(temp$IndicativeFee,0.95),])
+regs[[4]] <- felm(as.formula("IndicativeFee~log(put_impl_premium)+log(q_assets)+UtilisationByQuantity+AverageTenure+equity_ret_variance+m_equityreturn|data_month|0|CUSIP"),data=temp[temp$IndicativeFee>=quantile(temp$IndicativeFee,0.95),])
+
+
+stargazer(regs,type = output.type,no.space = TRUE,dep.var.caption = "Dependent Var: Indicative Fee",dep.var.labels = c("All","All","Fee > p95","Fee > p95"))
+```
+```{r prem_kernal_reg}
+
+# temp <- ssf_data[ssf_data$IndicativeFee<=quantile(ssf_data$IndicativeFee,0.99),]
+# 
+# temp <- temp[!is.na(temp$data_month),]
+# temp <- temp[is.finite(log(temp$put_impl_premium)),]
+# 
+# put_impl_premium <- felm(put_impl_premium~0|factor(data_month),data=temp)
+# temp['resid_put_impl_premium'] <- put_impl_premium$residuals
+# 
+# IndicativeFee <- felm(IndicativeFee~0|factor(data_month),data=temp)
+# temp['resid_IndicativeFee'] <- IndicativeFee$residuals
+# 
+# temp <- temp[temp$resid_put_impl_premium <= quantile(temp$resid_put_impl_premium,0.99),]
+# temp <- temp[temp$resid_put_impl_premium <= quantile(temp$resid_IndicativeFee,0.99),]
+# 
+# bw <- npregbw(formula=as.vector(temp$resid_put_impl_premium)~as.vector(temp$resid_IndicativeFee),bws=(max(temp$IndicativeFee)-min(temp$IndicativeFee))/5,bwtype="fixed",bandwidth.compute=F)
+# 
+# model <- npreg(bws=bw,gradients = TRUE)
+# plot.out <- plot(model, plot.errors.method="asymptotic",plot.errors.style="band",plot.behavior="data")
+# y.eval <- fitted(plot.out$r1)
+# x.eval <- plot.out$r1$eval[,1]#/10000+mean(loan_data[loan_data$ne_cutoff==-0.3,]$mpay_value,na.rm=TRUE)
+# y.se <- se(plot.out$r1)
+# y.lower.ci <- y.eval+y.se[,1]*1.96
+# y.upper.ci <- y.eval+y.se[,2]*1.96
+# df <- as.data.frame(cbind(x.eval,y.eval,y.lower.ci,y.upper.ci))
+# 
+# 
+# df <- melt(df,id="x.eval")
+# saveRDS(df,file="E:/shortselling/Data/Processed/put_prem_fee_kr.rds")
+
+df = readRDS(file="E:/shortselling/Data/Processed/put_prem_fee_kr.rds")
+g1 <-  ggplot(df,aes(x=x.eval, y=value,colour=variable)) + geom_line(aes(linetype=variable), size=1) +scale_linetype_manual(values = c(1,2,2))+scale_colour_manual(values=c("black","gray40","gray40"))+ theme_bw()+ylab("Put Premium") + xlab("Indicative Fee")+ labs(title = "")+ theme(legend.position="none")#+scale_y_continuous(limits = c(0.05, 0.06))
+g1
+```
+
+
+```{r put_premium_double_sort}
+temp <- ssf_data[is.finite(log(ssf_data$put_impl_premium)),]
+months <- unique(ssf_data$data_month)
+
+sorted_data <- NULL
+for(month in months) {
+  tryCatch({
+    t <- temp[temp$data_month==month,]
+    # t['fee_quintile'] <- ntile(t$IndicativeFee,5)
+    # t <- t[t$fee_quintile==5,]
+    #  t['fee_quintile'] <- ntile(t$IndicativeFee,5)
+    #  t <- t[t$fee_quintile==5,]
+     t['fee_quintile'] <- ntile(t$IndicativeFee,100)
+    t['premium_quintile'] <- 1#ntile(t$put_impl_premium,5)
+    t['fee_percentile'] <- t$fee_quintile#paste("Fee",t$fee_quintile,", Prem",t$premium_quintile)
+    t <- ddply(t,.(fee_percentile),summarise,fee=mean(IndicativeFee),prem=mean(put_impl_premium))
+    sorted_data <- rbind(sorted_data,t)
+  },error=function(e){})
+}
+
+sorted_data <- ddply(sorted_data,.(fee_percentile),summarise,fee=mean(fee),prem=mean(prem))
+sorted_data$fee <- sorted_data$fee*4
+
+sorted_data <- melt(sorted_data,id="fee_percentile")
+
+g2 <-  ggplot(sorted_data,aes(x=fee_percentile, y=value,colour=variable)) + geom_line(aes(linetype=variable), size=1) +scale_linetype_manual(values = c(1,2))+scale_colour_manual(values=c("black","gray40"))+ theme_bw()+ylab("Put Premium") + xlab(" Fee Percentile")+ labs(title = "")+ theme(legend.position="bottom")#+scale_y_continuous(limits = c(0.05, 0.06))
+g2
+```
+
+
+```{r call_premium_double_sort}
+temp <- ssf_data[is.finite(log(ssf_data$put_impl_premium)),]
+months <- unique(ssf_data$data_month)
+temp['lendable_frac'] <- temp$LendableQuantity/(temp$sharesoutstanding*1e6)
+temp['on_loan_frac'] <- temp$LenderQuantityOnLoan/temp$LendableQuantity
+temp['put_vol_open_int'] <- temp$put_opt_volume/temp$put_opt_open_interest
+temp['call_vol_open_int'] <- temp$call_opt_volume/temp$call_opt_open_interest
+
+temp$put_vol_open_int <- ifelse(!is.finite(temp$put_vol_open_int),NA,temp$put_vol_open_int)
+temp$call_vol_open_int <- ifelse(!is.finite(temp$call_vol_open_int),NA,temp$call_vol_open_int)
+
+sorted_data <- NULL
+for(month in months) {
+  tryCatch({
+    t <- temp[temp$data_month==month,]
+    # t['fee_quintile'] <- ntile(t$IndicativeFee,5)
+    # t <- t[t$fee_quintile==5,]
+    #  t['fee_quintile'] <- ntile(t$IndicativeFee,5)
+    #  t <- t[t$fee_quintile==5,]
+     t['fee_quintile'] <- ntile(t$IndicativeFee,20)
+    t['premium_quintile'] <- 1#ntile(t$put_impl_premium,5)
+    t['fee_percentile'] <- t$fee_quintile#paste("Fee",t$fee_quintile,", Prem",t$premium_quintile)
+    t <- ddply(t,.(fee_percentile),summarise,fee=mean(IndicativeFee),call_prem=mean(call_impl_premium,na.rm=TRUE),put_prem=mean(put_impl_premium),call_volatility = mean(call_impl_volatility,na.rm=TRUE),put_volatility = mean(put_impl_volatility,na.rm=TRUE),equity_ret_variance=mean(equity_ret_variance,na.rm=TRUE),m_equityreturn=mean(m_equityreturn,na.rm=TRUE),lendable_frac = mean(lendable_frac,na.rm=TRUE),on_loan_frac=mean(on_loan_frac,na.rm=TRUE),put_vol_open_int=mean(put_vol_open_int,na.rm=TRUE),call_vol_open_int=mean(call_vol_open_int,na.rm=TRUE))
+    sorted_data <- rbind(sorted_data,t)
+  },error=function(e){})
+}
+
+sorted_data <- ddply(sorted_data,.(fee_percentile),summarise,fee=mean(fee),call_prem=mean(call_prem),put_prem=mean(put_prem),call_volatility = mean(call_volatility),put_volatility =mean(put_volatility), equity_ret_variance=mean(equity_ret_variance), m_equityreturn=mean(m_equityreturn),lendable_frac = mean(lendable_frac),on_loan_frac=mean(on_loan_frac), put_vol_open_int = mean(put_vol_open_int), call_vol_open_int = mean(call_vol_open_int))
+
+sd = sorted_data
+
+sorted_data$fee <- sorted_data$fee*4
+sorted_data$call_volatility <- sorted_data$call_volatility*2
+sorted_data$put_volatility <- sorted_data$put_volatility*2
+sorted_data$m_equityreturn <- NULL#sorted_data$m_equityreturn*100
+sorted_data$equity_ret_variance <- sorted_data$equity_ret_variance*1000
+# sorted_data$call_prem <- NULL
+# sorted_data$put_prem <- NULL
+sorted_data$on_loan_frac <- NULL
+sorted_data$lendable_frac <- NULL
+sorted_data$call_vol_open_int <- sorted_data$call_vol_open_int/4 
+sorted_data$put_vol_open_int <- sorted_data$put_vol_open_int/4
+
+sorted_data <- melt(sorted_data,id="fee_percentile")
+
+
+g2 <-  ggplot(sorted_data,aes(x=fee_percentile, y=value,colour=variable)) + geom_line(aes(linetype=variable), size=1) +scale_linetype_manual(values = c(1,1,1,1,1,1,1,1))+scale_colour_manual(values=c("black","blue","red","green","darkgreen","purple","coral3","goldenrod"))+ theme_bw()+ylab("") + xlab(" Fee Percentile")+ labs(title = "")+ theme(legend.position="bottom")+  ylim(0,2.5)+theme(axis.text.y=element_blank())#+scale_y_continuous(limits = c(0.05, 0.06))
+g2
+```
+

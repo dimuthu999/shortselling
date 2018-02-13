@@ -76,6 +76,7 @@ require(plyr)
 require(sqldf)
 require(stargazer)
 require(data.table)
+require(lubridate)
 
 .jinit(classpath="C:/Users/dnratnadiwakara/Documents/sas.core.jar", parameters="-Xmx4g")
 .jaddClassPath("C:/Users/dnratnadiwakara/Documents/sas.intrnet.javatools.jar")
@@ -106,7 +107,7 @@ wrds <- wrdsconnect(user='dimuthu9', pass='{SAS002}4FA9941A27D636B15931DF1E08D47
 
 ```{r table_identification}
 libraries <- run_and_fetch("select distinct libname from dictionary.tables")
-databases <- run_and_fetch("select distinct memname from dictionary.columns where libname='FISD'")
+databases <- run_and_fetch("select * from dictionary.columns where libname='WRDSAPPS'")
 
 ```
 
@@ -122,6 +123,7 @@ issue_data <- issue_data[trim(issue_data$PUTABLE)=="N",]
 issue_data <- issue_data[trim(issue_data$FIX_FREQUENCY)=="",]
 issue_data <- issue_data[trim(issue_data$INTEREST_FREQUENCY)=="2",]
 issue_data <- issue_data[trim(issue_data$DAY_COUNT_BASIS)=="30/360",]
+issue_data <- issue_data[trim(issue_data$CONVERTIBLE)=="N",]
 issue_data <- issue_data[,c("ISSUE_ID","COMPLETE_CUSIP","FIRST_INTEREST_DATE","LAST_INTEREST_DATE","COUPON")]
 issue_data <- data.table(issue_data)
 setkeyv(issue_data,c('ISSUE_ID','COMPLETE_CUSIP'))
@@ -132,22 +134,25 @@ setkeyv(issue_data,c('ISSUE_ID','COMPLETE_CUSIP'))
 
 ```{r fisd_return}
 
-    # current day
-    day1 <- run_and_fetch("select max(ISSUE_ID) as ISSUE_ID,max(CUSIP_ISSUER_ID) as CUSIP_ISSUER_ID,max(CUSIP_ISSUE_ID) as CUSIP_ISSUE_ID,max(FILE_DATE)+1 as FILE_DATE,sum(RPTD_PR*INPUT(ASCII_RPTD_VOL_TX,20.))/sum(INPUT(ASCII_RPTD_VOL_TX,20.)) as wtavgprice1 from FISD.FISD_TSALES where FILE_DATE IS NOT NULL and ASCII_RPTD_VOL_TX IS NOT NULL and RPTD_PR IS NOT NULL GROUP BY ISSUE_ID,FILE_DATE")
-    day1['CUSIP'] <- paste(day1$CUSIP_ISSUER_ID,day1$CUSIP_ISSUE_ID,sep="")
-    day1 <- data.table(day1)
-    setkeyv(day1,c('CUSIP','FILE_DATE'))
-
-    # next day
-    day2 <- run_and_fetch("select max(ISSUE_ID) as ISSUE_ID,max(CUSIP_ISSUER_ID) as CUSIP_ISSUER_ID,max(CUSIP_ISSUE_ID) as CUSIP_ISSUE_ID,max(FILE_DATE) as FILE_DATE,sum(RPTD_PR*INPUT(ASCII_RPTD_VOL_TX,20.))/sum(INPUT(ASCII_RPTD_VOL_TX,20.)) as wtavgprice2 from FISD.FISD_TSALES where FILE_DATE IS NOT NULL and ASCII_RPTD_VOL_TX IS NOT NULL and RPTD_PR IS NOT NULL GROUP BY ISSUE_ID,FILE_DATE")
-    day2['CUSIP'] <- paste(day2$CUSIP_ISSUER_ID,day2$CUSIP_ISSUE_ID,sep="")
-    day2 <- data.table(day2)
-    setkeyv(day2,c('CUSIP','FILE_DATE'))
-
-    # merge current day's price and the next day's price
-    merged <- merge(day1,day2[,c("CUSIP","FILE_DATE","wtavgprice2")],by=c('CUSIP','FILE_DATE'))
-    merged <- merge(merged,issue_data,by.x = "CUSIP",by.y = "COMPLETE_CUSIP")
-
+        # # current day
+        # day1 <- run_and_fetch("select max(ISSUE_ID) as ISSUE_ID,max(CUSIP_ISSUER_ID) as CUSIP_ISSUER_ID,max(CUSIP_ISSUE_ID) as CUSIP_ISSUE_ID,max(FILE_DATE)+1 as FILE_DATE,sum(RPTD_PR*INPUT(ASCII_RPTD_VOL_TX,20.))/sum(INPUT(ASCII_RPTD_VOL_TX,20.)) as wtavgprice1, avg(RPTD_PR) as eqwtdprice1 from FISD.FISD_TSALES where FILE_DATE IS NOT NULL and ASCII_RPTD_VOL_TX IS NOT NULL and RPTD_PR IS NOT NULL GROUP BY ISSUE_ID,FILE_DATE")
+        # day1['CUSIP'] <- paste(day1$CUSIP_ISSUER_ID,day1$CUSIP_ISSUE_ID,sep="")
+        # day1 <- data.table(day1)
+        # setkeyv(day1,c('CUSIP','FILE_DATE'))
+        # 
+        # # next day
+        # day2 <- run_and_fetch("select max(ISSUE_ID) as ISSUE_ID,max(CUSIP_ISSUER_ID) as CUSIP_ISSUER_ID,max(CUSIP_ISSUE_ID) as CUSIP_ISSUE_ID,max(FILE_DATE) as FILE_DATE,sum(RPTD_PR*INPUT(ASCII_RPTD_VOL_TX,20.))/sum(INPUT(ASCII_RPTD_VOL_TX,20.)) as wtavgprice2,avg(RPTD_PR) as eqwtdprice2 from FISD.FISD_TSALES where FILE_DATE IS NOT NULL and ASCII_RPTD_VOL_TX IS NOT NULL and RPTD_PR IS NOT NULL GROUP BY ISSUE_ID,FILE_DATE")
+        # day2['CUSIP'] <- paste(day2$CUSIP_ISSUER_ID,day2$CUSIP_ISSUE_ID,sep="")
+        # day2 <- data.table(day2)
+        # setkeyv(day2,c('CUSIP','FILE_DATE'))
+        # 
+        # # merge current day's price and the next day's price
+        # merged <- merge(day1,day2[,c("CUSIP","FILE_DATE","wtavgprice2","eqwtdprice2")],by=c('CUSIP','FILE_DATE'))
+        # merged <- merge(merged,issue_data,by.x = "CUSIP",by.y = "COMPLETE_CUSIP")
+        # 
+        # saveRDS(merged, file = "E:/shortselling/Data/Processed/raw_returns_fisd.rds")
+    merged <- readRDS(file = "E:/shortselling/Data/Processed/raw_returns_fisd.rds")
+    
     rm(day1)
     rm(day2)
     gc()
@@ -155,6 +160,14 @@ setkeyv(issue_data,c('ISSUE_ID','COMPLETE_CUSIP'))
     merged[,FILE_MONTH:=as.yearmon(merged$FILE_DATE)]
     merged$FIRST_INTEREST_DATE <- as.Date(merged$FIRST_INTEREST_DATE)
     merged$LAST_INTEREST_DATE <- as.Date(merged$LAST_INTEREST_DATE)
+    merged[,MONTH_DATE:= format(merged$FILE_DATE,"%m/%d")]
+    merged[,COUPON_DATE_1:= format(merged$FIRST_INTEREST_DATE,"%m/%d")]
+    merged[,SECOND_INTEREST_DATE:= merged$FIRST_INTEREST_DATE %m+% months(6)]
+    merged[,COUPON_DATE_2:= format(merged$SECOND_INTEREST_DATE,"%m/%d")]
+    
+    # removing returns on the coupon dates
+    merged <- merged[ MONTH_DATE != COUPON_DATE_1,]
+    merged <- merged[ MONTH_DATE != COUPON_DATE_2,]
 
     # identifying number of returns per month
     merged[,ind:=1]
@@ -168,13 +181,16 @@ setkeyv(issue_data,c('ISSUE_ID','COMPLETE_CUSIP'))
     print("Number of issuers")
     length(unique(merged$CUSIP_ISSUER_ID))
 
-    # calculate mean daily volume weighted return for each issue-month
-    merged[,DAILY_RETURN:=log(merged$wtavgprice2/merged$wtavgprice1)]
-    merged <- merged[, list(DAILY_RETURN = mean(DAILY_RETURN)), by = list(CUSIP,FILE_MONTH)]
+    # calculate mean daily volume weighted return and equal weighted return for each issue-month
+    merged[,DAILY_RETURN_WA:=log(merged$wtavgprice2/merged$wtavgprice1)]
+    merged[,DAILY_RETURN_EQ:=log(merged$eqwtdprice2/merged$eqwtdprice1)]
+    merged <- merged[, list(DAILY_RETURN_WA = mean(DAILY_RETURN_WA),DAILY_RETURN_EQ=mean(DAILY_RETURN_EQ)), by = list(CUSIP,FILE_MONTH)]
+    merged[,MONTHLY_RETURN_WA:= exp(merged$DAILY_RETURN_WA*30)]
+    merged[,MONTHLY_RETURN_EQ:= exp(merged$DAILY_RETURN_EQ*30)]
 
-    saveRDS(merged, file = "E:/shortselling/Data/Processed/fisd_processed.rds")
+    saveRDS(merged, file = "E:/shortselling/Data/Processed/fisd_processed_2.rds")
 
-merged <- readRDS(file="E:/shortselling/Data/Processed/fisd_processed.rds")
+merged <- readRDS(file="E:/shortselling/Data/Processed/fisd_processed_2.rds")
 ```
 
 
@@ -224,18 +240,19 @@ setkeyv(markit_fees,c('CUSIP','data_month'))
 ```{r merge_fisd_markit}
 setkeyv(merged,c('CUSIP','FILE_MONTH'))
 merged <- merge(merged,markit_fees,by.x =c('CUSIP','FILE_MONTH') ,by.y = c('CUSIP','data_month'))
-rm(markit_fees)
+# rm(markit_fees)
 gc()
 
 # merged[,ind:=1]
 # temp <- merged[, list(count = sum(ind)), by = list(FILE_MONTH)]
 # merged <- merge(merged,temp,by=c('FILE_MONTH'))
 
-merged <- merged[!is.na(merged$DAILY_RETURN),]
+merged <- merged[!is.na(merged$DAILY_RETURN_EQ),]
 merged <- merged[!is.na(merged$FEE),]
-merged <- merged[,return_decile:=ntile(DAILY_RETURN,10),by=list(FILE_MONTH)]
+merged <- merged[,return_decile_eq:=ntile(DAILY_RETURN_EQ,10),by=list(FILE_MONTH)]
+merged <- merged[,return_decile_wa:=ntile(DAILY_RETURN_WA,10),by=list(FILE_MONTH)]
 merged <- merged[,fee_decile:=ntile(FEE,10),by=list(FILE_MONTH)]
-
+merged <- merged[,year:=format(merged$FILE_MONTH,"%Y")]
 # merged <- as.data.frame(merged)
 # 
 # return_deciles <- ddply(merged,.(FILE_MONTH),summarise,
@@ -277,8 +294,8 @@ merged <- merged[,fee_decile:=ntile(FEE,10),by=list(FILE_MONTH)]
 # Double Sort
 
 ```{r double_sort1}
-double_sort <- merged[, lapply(.SD, mean, na.rm=TRUE), by=list(fee_decile), .SDcols=c("DAILY_RETURN", "FEE") ] 
-double_sort_obs <- merged[, lapply(.SD, length), by=list(fee_decile), .SDcols=c("DAILY_RETURN") ]
+double_sort <- merged[, lapply(.SD, mean, na.rm=TRUE), by=list(fee_decile), .SDcols=c("DAILY_RETURN_EQ","DAILY_RETURN_WA", "FEE") ] 
+double_sort_obs <- merged[, lapply(.SD, length), by=list(year,fee_decile), .SDcols=c("DAILY_RETURN_EQ") ]
 ```
 
 

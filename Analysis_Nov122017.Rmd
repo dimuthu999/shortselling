@@ -1,0 +1,236 @@
+---
+title: "Title"
+date: "November 12, 2017"
+output:
+  html_document:
+    css: bodycss.css
+    fig_width: 8
+    font-family: Helvetica,Arial,sans-serif;
+    number_section: yes
+    toc: yes
+  pdf_document:
+    toc: yes
+  word_document:
+    toc: yes
+linestretch: 2
+bibliography: C:\Users\dnratnadiwakara\OneDrive\library.bib
+---
+
+<style type="text/css">
+body{ 
+      font-size: 15px;
+      font-family: Helvetica,Arial,sans-serif;
+      line-height: 200%;
+  }
+  
+.author {
+ font-size: 15px;
+ color: Black;
+ font-style: normal;
+ text-align: center;
+}
+
+
+.date { 
+ font-size: 15px;
+ color: Black;
+ font-style: normal;
+ text-align: center;
+}
+
+.title{
+  text-align: center;
+  font-size: 15px;
+ color: Black;
+ 
+}
+
+.toc-ignore{
+  text-align: center;
+  font-size: 15px;
+ color: Black;
+}
+
+.fluid-row{
+  text-align: center;
+  font-size: 15px;
+ color: Black;
+}
+
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE,echo = FALSE, fig.align='center')
+```
+
+
+
+```{r initialize,message=FALSE,warning=FALSE}
+rm(list=ls())
+path = "E:/shortselling"
+setwd(path)
+require(gdata)
+require(dplyr)
+require(zoo)
+require(plyr)
+require(sqldf)
+require(stargazer)
+require(data.table)
+require(lubridate)
+require(lfe)
+library(np)
+library(ggplot2)
+
+output.type="text"
+
+ssf_data <- readRDS(file="E:/shortselling/Data/Processed/Monthly_sample_Nov122017.rds")
+ssf_data <- as.data.frame(ssf_data)
+ssf_data['data_date'] <- as.Date(ssf_data$data_month)
+
+```
+
+# Descriptives
+```{r descs}
+
+stargazer(ssf_data[, c("IndicativeFee","UtilisationByQuantity","DCBS","LenderQuantityOnLoan","LendableQuantity")], type = output.type, summary.stat = c("mean", "sd", "p25", "median", "p75", "n"),notes = "",digits = 4)
+```
+
+
+
+```{r put_premium_double_sort}
+temp <- ssf_data[is.finite(log(ssf_data$put_bid_ask)),]
+months <- unique(ssf_data$data_month)
+library(psych)
+trim = 0.005
+
+sorted_data <- NULL
+for(month in months) {
+  tryCatch({
+    t <- temp[temp$data_month==month,]
+    # t['fee_quintile'] <- ntile(t$IndicativeFee,5)
+    # t <- t[t$fee_quintile==5,]
+    #  t['fee_quintile'] <- ntile(t$IndicativeFee,5)
+    #  t <- t[t$fee_quintile==5,]
+     t['fee_quintile'] <- ntile(t$IndicativeFee,20)
+    t['premium_quintile'] <- 1#ntile(t$put_impl_premium,5)
+    t['fee_percentile'] <- t$fee_quintile#paste("Fee",t$fee_quintile,", Prem",t$premium_quintile)
+    t <- ddply(t,.(fee_percentile),summarise,
+               fee=winsor.mean(IndicativeFee,trim = trim,na.rm=TRUE),
+               call_bid_ask=winsor.mean(call_bid_ask,trim = trim,na.rm=TRUE),
+               call_option_volume_at_the_money =winsor.mean(call_option_volume_at_the_money/sharesoutstanding,trim = trim,na.rm=TRUE),
+               call_premium_to_strike = winsor.mean(call_premium_to_strike,trim = trim,na.rm=TRUE),
+               call_open_interest_at_the_money = winsor.mean(call_open_interest_at_the_money/sharesoutstanding,trim = trim,na.rm=TRUE),
+               call_impl_volatility = winsor.mean(call_impl_volatility,trim = trim,na.rm=TRUE),
+               put_bid_ask=winsor.mean(put_bid_ask,trim = trim,na.rm=TRUE),
+               put_option_volume_at_the_money =winsor.mean(put_option_volume_at_the_money/sharesoutstanding,trim = trim,na.rm=TRUE),
+               put_premium_to_strike = winsor.mean(put_premium_to_strike,trim = trim,na.rm=TRUE),
+               put_open_interest_at_the_money = winsor.mean(put_open_interest_at_the_money/sharesoutstanding,trim = trim,na.rm=TRUE),
+               put_impl_volatility = winsor.mean(put_impl_volatility,trim = trim,na.rm=TRUE),
+               equity_volume_to_outstanding = winsor.mean(m_sharevolume/sharesoutstanding,trim = trim,na.rm=TRUE),
+               market_to_book = winsor.mean(market_value/q_equity,trim = trim,na.rm=TRUE),
+               m_equityreturn = winsor.mean(m_equityreturn,trim = trim,na.rm=TRUE),
+               equity_ret_variance = winsor.mean(equity_ret_variance,trim = trim,na.rm=TRUE),
+               UtilisationByQuantity = winsor.mean(UtilisationByQuantity,trim = trim,na.rm=TRUE),
+               no_of_companies = length(unique(SECID))
+             )
+    t['month'] = month
+    sorted_data <- rbind(sorted_data,t)
+  },error=function(e){})
+}
+
+monthly_data <- sorted_data
+monthly_data['year'] <- floor(monthly_data$month)
+sorted_data <- ddply(monthly_data,.(fee_percentile),summarise,
+                     fee=winsor.mean(fee,trim = trim,na.rm = TRUE),
+                     call_bid_ask=winsor.mean(call_bid_ask,trim = trim,na.rm=TRUE),
+                     call_option_volume_at_the_money =winsor.mean(call_option_volume_at_the_money,trim = trim,na.rm=TRUE),
+                     call_premium_to_strike = winsor.mean(call_premium_to_strike,trim = trim,na.rm=TRUE),
+                     call_open_interest_at_the_money = winsor.mean(call_open_interest_at_the_money,trim = trim,na.rm=TRUE),
+                     call_impl_volatility = winsor.mean(call_impl_volatility,trim = trim,na.rm=TRUE),
+                     put_bid_ask=winsor.mean(put_bid_ask,trim = trim,na.rm=TRUE),
+                     put_option_volume_at_the_money =winsor.mean(put_option_volume_at_the_money,trim = trim,na.rm=TRUE),
+                     put_premium_to_strike = winsor.mean(put_premium_to_strike,trim = trim,na.rm=TRUE),
+                     put_open_interest_at_the_money = winsor.mean(put_open_interest_at_the_money,trim = trim,na.rm=TRUE),
+                     put_impl_volatility = winsor.mean(put_impl_volatility,trim = trim,na.rm=TRUE),
+                     equity_volume_to_outstanding = winsor.mean(equity_volume_to_outstanding,trim = trim,na.rm=TRUE),
+                     market_to_book = winsor.mean(market_to_book,trim = trim,na.rm=TRUE),
+                     m_equityreturn = winsor.mean(m_equityreturn,trim = trim,na.rm=TRUE),
+                     equity_ret_variance = winsor.mean(equity_ret_variance,trim = trim,na.rm=TRUE),
+                     UtilisationByQuantity = winsor.mean(UtilisationByQuantity,trim = trim,na.rm=TRUE),
+                     no_of_companies = median(no_of_companies,na.rm=TRUE)
+               )
+
+sorted_data_yearly <- ddply(monthly_data,.(fee_percentile,year),summarise,
+                     fee=winsor.mean(fee,trim = trim,na.rm = TRUE),
+                     call_bid_ask=winsor.mean(call_bid_ask,trim = trim,na.rm=TRUE),
+                     call_option_volume_at_the_money =winsor.mean(call_option_volume_at_the_money,trim = trim,na.rm=TRUE),
+                     call_premium_to_strike = winsor.mean(call_premium_to_strike,trim = trim,na.rm=TRUE),
+                     call_open_interest_at_the_money = winsor.mean(call_open_interest_at_the_money,trim = trim,na.rm=TRUE),
+                     call_impl_volatility = winsor.mean(call_impl_volatility,trim = trim,na.rm=TRUE),
+                     put_bid_ask=winsor.mean(put_bid_ask,trim = trim,na.rm=TRUE),
+                     put_option_volume_at_the_money =winsor.mean(put_option_volume_at_the_money,trim = trim,na.rm=TRUE),
+                     put_premium_to_strike = winsor.mean(put_premium_to_strike,trim = trim,na.rm=TRUE),
+                     put_open_interest_at_the_money = winsor.mean(put_open_interest_at_the_money,trim = trim,na.rm=TRUE),
+                     put_impl_volatility = winsor.mean(put_impl_volatility,trim = trim,na.rm=TRUE),
+                     equity_volume_to_outstanding = winsor.mean(equity_volume_to_outstanding,trim = trim,na.rm=TRUE),
+                     market_to_book = winsor.mean(market_to_book,trim = trim,na.rm=TRUE),
+                     m_equityreturn = winsor.mean(m_equityreturn,trim = trim,na.rm=TRUE),
+                     equity_ret_variance = winsor.mean(equity_ret_variance,trim = trim,na.rm=TRUE),
+                     UtilisationByQuantity = winsor.mean(UtilisationByQuantity,trim = trim,na.rm=TRUE)
+               )
+
+
+# write.csv(sorted_data,file="sorted_data.csv")
+```
+
+
+```{r call_premium_double_sort}
+temp <- ssf_data[is.finite(log(ssf_data$put_impl_premium)),]
+months <- unique(ssf_data$data_month)
+temp['lendable_frac'] <- temp$LendableQuantity/(temp$sharesoutstanding*1e6)
+temp['on_loan_frac'] <- temp$LenderQuantityOnLoan/temp$LendableQuantity
+temp['put_vol_open_int'] <- temp$put_opt_volume/temp$put_opt_open_interest
+temp['call_vol_open_int'] <- temp$call_opt_volume/temp$call_opt_open_interest
+
+temp$put_vol_open_int <- ifelse(!is.finite(temp$put_vol_open_int),NA,temp$put_vol_open_int)
+temp$call_vol_open_int <- ifelse(!is.finite(temp$call_vol_open_int),NA,temp$call_vol_open_int)
+
+sorted_data <- NULL
+for(month in months) {
+  tryCatch({
+    t <- temp[temp$data_month==month,]
+    # t['fee_quintile'] <- ntile(t$IndicativeFee,5)
+    # t <- t[t$fee_quintile==5,]
+    #  t['fee_quintile'] <- ntile(t$IndicativeFee,5)
+    #  t <- t[t$fee_quintile==5,]
+     t['fee_quintile'] <- ntile(t$IndicativeFee,20)
+    t['premium_quintile'] <- 1#ntile(t$put_impl_premium,5)
+    t['fee_percentile'] <- t$fee_quintile#paste("Fee",t$fee_quintile,", Prem",t$premium_quintile)
+    t <- ddply(t,.(fee_percentile),summarise,fee=mean(IndicativeFee),call_prem=mean(call_impl_premium,na.rm=TRUE),put_prem=mean(put_impl_premium),call_volatility = mean(call_impl_volatility,na.rm=TRUE),put_volatility = mean(put_impl_volatility,na.rm=TRUE),equity_ret_variance=mean(equity_ret_variance,na.rm=TRUE),m_equityreturn=mean(m_equityreturn,na.rm=TRUE),lendable_frac = mean(lendable_frac,na.rm=TRUE),on_loan_frac=mean(on_loan_frac,na.rm=TRUE),put_vol_open_int=mean(put_vol_open_int,na.rm=TRUE),call_vol_open_int=mean(call_vol_open_int,na.rm=TRUE))
+    sorted_data <- rbind(sorted_data,t)
+  },error=function(e){})
+}
+
+sorted_data <- ddply(sorted_data,.(fee_percentile),summarise,fee=mean(fee),call_prem=mean(call_prem),put_prem=mean(put_prem),call_volatility = mean(call_volatility),put_volatility =mean(put_volatility), equity_ret_variance=mean(equity_ret_variance), m_equityreturn=mean(m_equityreturn),lendable_frac = mean(lendable_frac),on_loan_frac=mean(on_loan_frac), put_vol_open_int = mean(put_vol_open_int), call_vol_open_int = mean(call_vol_open_int))
+
+sd = sorted_data
+
+sorted_data$fee <- sorted_data$fee*4
+sorted_data$call_volatility <- sorted_data$call_volatility*2
+sorted_data$put_volatility <- sorted_data$put_volatility*2
+sorted_data$m_equityreturn <- NULL#sorted_data$m_equityreturn*100
+sorted_data$equity_ret_variance <- sorted_data$equity_ret_variance*1000
+# sorted_data$call_prem <- NULL
+# sorted_data$put_prem <- NULL
+sorted_data$on_loan_frac <- NULL
+sorted_data$lendable_frac <- NULL
+sorted_data$call_vol_open_int <- sorted_data$call_vol_open_int/4 
+sorted_data$put_vol_open_int <- sorted_data$put_vol_open_int/4
+
+sorted_data <- melt(sorted_data,id="fee_percentile")
+
+
+g2 <-  ggplot(sorted_data,aes(x=fee_percentile, y=value,colour=variable)) + geom_line(aes(linetype=variable), size=1) +scale_linetype_manual(values = c(1,1,1,1,1,1,1,1))+scale_colour_manual(values=c("black","blue","red","green","darkgreen","purple","coral3","goldenrod"))+ theme_bw()+ylab("") + xlab(" Fee Percentile")+ labs(title = "")+ theme(legend.position="bottom")+  ylim(0,2.5)+theme(axis.text.y=element_blank())#+scale_y_continuous(limits = c(0.05, 0.06))
+g2
+```
+

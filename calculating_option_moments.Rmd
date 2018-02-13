@@ -26,6 +26,19 @@ op_data <- op_data[op_data$k_s<=0.97 | op_data$k_s>=1.03,]
 
 zerocd   <- read.csv(file="E:/shortselling/Data/Processed/zerocd.csv",stringsAsFactors = FALSE)
 zerocd$date <- as.Date(zerocd$date,format = "%m/%d/%Y")
+
+
+blackscholes <- function(S, X, rf, T, sigma,type) {
+    value <- NA
+ 
+    d1 <- (log(S/X)+(rf+sigma^2/2)*T)/(sigma*sqrt(T))
+    d2 <- d1 - sigma * sqrt(T)
+ 
+    if(type=="c") value <- S*pnorm(d1) - X*exp(-rf*T)*pnorm(d2)
+    if(type=="p") value <- X*exp(-rf*T) * pnorm(-d2) - S*pnorm(-d1)
+ 
+    value
+}
 ```
 
 ```{r}
@@ -99,14 +112,20 @@ for(secid in secids) {
         # eval(parse(text=paste("r_",maturity,"=rate/100",sep="")))
         
         
-        im_vol_data[paste("C_iv",maturity,sep="_")] <- im_vol_data[paste("C",lb,sep="_")] + ((im_vol_data[paste("C",ub,sep="_")]-im_vol_data[paste("C",lb,sep="_")])/(ub-lb))
-        im_vol_data[paste("P_iv",maturity,sep="_")] <- im_vol_data[paste("P",lb,sep="_")] + ((im_vol_data[paste("P",ub,sep="_")]-im_vol_data[paste("C",lb,sep="_")])/(ub-lb))
+        im_vol_data[paste("C_iv",maturity,sep="_")] <- im_vol_data[paste("C",lb,sep="_")] + ((im_vol_data[paste("C",ub,sep="_")]-im_vol_data[paste("C",lb,sep="_")])*(maturity-lb)/(ub-lb))
+        im_vol_data[paste("P_iv",maturity,sep="_")] <- im_vol_data[paste("P",lb,sep="_")] + ((im_vol_data[paste("P",ub,sep="_")]-im_vol_data[paste("C",lb,sep="_")])*(maturity-lb)/(ub-lb))
         
-        eval(parse(text=paste("setDT(im_vol_data)[,C_price_",maturity," := GBSOption(TypeFlag = 'c', S = underlying_price, X =k, Time = maturity/365, r = rate,b=0, sigma = C_iv_",maturity,")@price ,]",sep="")))
+        # eval(parse(text=paste("setDT(im_vol_data)[,C_price_",maturity," := GBSOption(TypeFlag = 'c', S = underlying_price, X =k, Time = maturity/365, r = rate,b=0, sigma = C_iv_",maturity,")@price ,]",sep="")))
+        # 
+        # eval(parse(text=paste("setDT(im_vol_data)[,P_price_",maturity," := GBSOption(TypeFlag = 'p', S = underlying_price, X = k, Time = maturity/365, r = rate,b=0, sigma = C_iv_",maturity,")@price ,]",sep="")))
         
-        eval(parse(text=paste("setDT(im_vol_data)[,P_price_",maturity," := GBSOption(TypeFlag = 'p', S = underlying_price, X = k, Time = maturity/365, r = rate,b=0, sigma = C_iv_",maturity,")@price ,]",sep="")))
+        
 
         im_vol_data <- as.data.frame(im_vol_data)
+        
+        eval(parse(text=paste("im_vol_data['C_price_",maturity,"']<- blackscholes(underlying_price,im_vol_data$k,rate,maturity/365,im_vol_data$C_iv_",maturity,",'c')",sep="")))
+        
+        eval(parse(text=paste("im_vol_data['P_price_",maturity,"']<- blackscholes(underlying_price,im_vol_data$k,rate,maturity/365,im_vol_data$P_iv_",maturity,",'p')",sep="")))
         
         
         eval(parse(text=paste("im_vol_data$C_price_",maturity," <- ifelse(abs(im_vol_data$C_price_",maturity,")<1e-30 | !is.finite(im_vol_data$C_price_",maturity,") | is.na(im_vol_data$C_price_",maturity,"),0,im_vol_data$C_price_",maturity,")",sep="")))
@@ -125,12 +144,12 @@ for(secid in secids) {
 
         temp_C <- im_vol_data[im_vol_data$k>=underlying_price,]
         temp_C['inTerm'] = log(temp_C$k/underlying_price)
-        temp_C['weights'] = 2 * (1-temp_C$inTerm)/temp_C$k^2
+        temp_C['weights'] = 2 * (1-temp_C$inTerm)/(temp_C$k^2)
         temp_C['term1'] <- temp_C[paste("C_price_",maturity,sep="")]*temp_C$weights
         
         temp_P <- im_vol_data[im_vol_data$k<=underlying_price,]
         temp_P['inTerm'] = log(underlying_price/temp_P$k)
-        temp_P['weights'] = 2 * (1+temp_P$inTerm)/temp_P$k^2
+        temp_P['weights'] = 2 * (1+temp_P$inTerm)/(temp_P$k^2)
         temp_P['term1'] <- temp_P[paste("P_price_",maturity,sep="")]*temp_P$weights        
         
         VTau <- trapz(temp_C$k,temp_C$term1) + trapz(temp_P$k,temp_P$term1)

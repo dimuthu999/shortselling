@@ -291,6 +291,36 @@ setkeyv(merged,c('CUSIP','data_qtr','data_year'))
 
 ```
 
+
+# OPTION MATRIX Data
+```{r option_matrix}
+filelist <- list.files(path="E:/shortselling/Data/Processed/opprcd_secprd/",pattern = "*.rds",full.names = TRUE)
+# These files are created by optionmatrix_data.rmd in fina27hs
+
+optionm <- NULL
+for(fn in filelist){
+  temp <- readRDS(file=fn)
+  optionm <- rbind(optionm,temp)
+}
+
+calls <- optionm[optionm$cp_flag=="C",]
+calls$cp_flag <- NULL
+calls$underlying_price <- NULL
+calls$underlying_volume <- NULL
+names(calls) <- c(names(calls)[1:2],paste("call_",names(calls)[3:17],sep=""))
+
+puts <- optionm[optionm$cp_flag=="P",]
+puts$cp_flag <- NULL
+names(puts) <- c(names(puts)[1:2],paste("put_",names(puts)[3:13],sep=""),names(puts)[14:15],paste("put_",names(puts)[16:19],sep=""))
+```
+
+# Merge OPTION MATRIX Data
+```{r merge_option_matrix}
+merged <- merge(merged,calls,by.x=c("SECID","data_month"),by.y=c("secid","data_month"),all.x = TRUE)
+merged <- merge(merged,puts,by.x=c("SECID","data_month"),by.y=c("secid","data_month"),all.x = TRUE)
+```
+
+
 # COMPUSTAT Quarterly Variables
 
 ```{r compustat_q_vars}
@@ -298,7 +328,7 @@ setkeyv(merged,c('CUSIP','data_qtr','data_year'))
 # databases <- run_and_fetch("select distinct memname from dictionary.columns where libname='OPTIONM'")
 
 gvkeys <- paste("'",as.character(unique(LINKDATA$GVKEY)),"'",collapse=", ",sep="")
-run_query(paste("select fyearq,fqtr,atq as q_assets,EPSPXQ as q_eps, ltq as q_liabilities, saleq as q_sales,cusip as CUSIP,conm,cshoq as sharesoutstanding,gvkey as GVKEY from COMPM.FUNDQ where gvkey in (",gvkeys,") & fyearq>=2002",sep=""))
+run_query(paste("select fyearq,fqtr,atq as q_assets,EPSPXQ as q_eps, ltq as q_liabilities, saleq as q_sales,cusip as CUSIP,conm,cshoq*1000000 as sharesoutstanding,gvkey as GVKEY, MKVALTQ as market_value, TEQQ as q_equity from COMPM.FUNDQ where gvkey in (",gvkeys,") & fyearq>=2002",sep=""))
 fetch_last_query(name="COMPUSTAT_Q")
 
 COMPUSTAT_Q$fqtr <- COMPUSTAT_Q$fqtr*3
@@ -316,25 +346,6 @@ stargazer(head(COMPUSTAT_Q,10),summary = FALSE,type="text")
 
 ```
 
-# COMPUSTAT Annual Variables
-```{r compustat_a_vars}
-
-# gvkeys <- paste("'",as.character(unique(LINKDATA$GVKEY)),"'",collapse=", ",sep="")
-# run_query(paste("select AT as a_assets,LT as a_liabilities, EPSPX as a_eps, SALE as a_sales, FYEAR as data_year,cusip as CUSIP,gvkey as GVKEY from COMPM.FUNDA where gvkey in (",gvkeys,") & FYEAR>=2002",sep=""))
-# fetch_last_query(name="COMPUSTAT_A")
-# 
-# COMPUSTAT_A$CUSIP <- sapply(COMPUSTAT_A$CUSIP, function(x) substr(x,1,8))
-# COMPUSTAT_A <- COMPUSTAT_A[,names(COMPUSTAT_A)[!names(COMPUSTAT_A) %in% c("CUSIP")]]
-# COMPUSTAT_A <- COMPUSTAT_A[!(is.na(COMPUSTAT_A$a_assets) & is.na(COMPUSTAT_A$a_sales)),]
-# COMPUSTAT_A <- COMPUSTAT_A[!duplicated(COMPUSTAT_A[,c("GVKEY","data_year")]),]
-# 
-# COMPUSTAT_A <- data.table(COMPUSTAT_A)
-# setkeyv(COMPUSTAT_A,c('GVKEY','data_year'))
-# 
-# stargazer(head(COMPUSTAT_A,10),summary = FALSE,type="text")
-
-```
-
 # Merge COMPUSTAT with Fee data
 ```{r merge_compustat_fee}
 merged <- merge(merged,COMPUSTAT_Q,by=c("CUSIP","data_qtr"),all.x = TRUE)
@@ -347,7 +358,7 @@ merged <- merge(merged,COMPUSTAT_Q,by=c("CUSIP","data_qtr"),all.x = TRUE)
 ```{r crsp_vars_monthly}
 permcos <- paste("",as.character(unique(STOCKNAMES$PERMCO)),"",collapse=", ",sep="")
 
-run_query(paste("select DATE,VOL as m_sharevolume,RET as m_equityreturn,CUSIP as CUSIP,PERMCO  from CRSPA.MSF where PERMCO in (",permcos,") & year(DATE)>=2002 ",sep=""))
+run_query(paste("select DATE,VOL*100 as m_sharevolume,PRC as shareprice, BID as underlying_bid, ASK as underlying_ask,RET as m_equityreturn,CUSIP as CUSIP,PERMCO  from CRSPA.MSF where PERMCO in (",permcos,") & year(DATE)>=2002 ",sep=""))
 fetch_last_query(name="CRSP_M",rows = -1)
 
 CRSP_M['data_month'] <- as.yearmon(as.Date(CRSP_M$DATE))
@@ -360,7 +371,6 @@ setkeyv(CRSP_M,c('CUSIP','data_month'))
 
 stargazer(head(CRSP_M,10),summary = FALSE,type="text")
 ```
-
 
 # CRSP Daily Variables
 ```{r crsp_vars_daily}
@@ -390,220 +400,30 @@ merged <- merge(merged,CRSP_M,by=c("CUSIP","data_month"),all.x = TRUE)
 merged <- merge(merged,CRSP_DAILY,by=c("CUSIP","data_month"),all.x = TRUE)
 ```
 
-# OPTIONM Volume
 
-```{r optionm_opvold}
-# secids <- paste("",as.character(unique(SECNMD_MONTHLY$SECID)),"",collapse=", ",sep="")
-# 
-# # testing secid = 207283
-# 
-# # run_query(paste("select secid,date,cp_flag,volume,open_interest from optionm.opvold  where secid in (",207283,") & year(date)>=2002 & cp_flag in ('C','P') ",sep=""))
-# # fetch_last_query(name="OPTION_VOLUME",rows = -1)
-# # OPTION_VOLUME$date <- as.Date(OPTION_VOLUME$date)
-# # OPTION_VOLUME['MONTH'] <- as.yearmon(OPTION_VOLUME$date)
-# # OPTION_VOLUME <- data.table(OPTION_VOLUME)
-# # OPTION_VOLUME <- OPTION_VOLUME[, list(VOLUME = sum(volume,na.rm = TRUE),OPEN_INTEREST=sum(open_interest,na.rm = TRUE)), by = list(secid,MONTH,cp_flag)]
-# 
-# run_query(paste("select min(secid) as secid,sum(volume) as option_volume,sum(open_interest) as option_open_interest,min(year(date)) as year, min(month(date)) as month from optionm.opvold  where secid in (",secids,") & year(date)>=2002 & cp_flag not in ('C','P') group by secid,year(date),month(date)",sep=""))
-# fetch_last_query(name="OPTION_VOLUME",rows = -1)
-# 
-# OPTION_VOLUME['data_month'] <- as.yearmon(as.Date(paste(OPTION_VOLUME$year,OPTION_VOLUME$month,"01",sep="-")))
-# OPTION_VOLUME <- OPTION_VOLUME[!(is.na(OPTION_VOLUME$option_open_interest) & is.na(OPTION_VOLUME$option_volume)),]
-# OPTION_VOLUME <- OPTION_VOLUME[!duplicated(OPTION_VOLUME[,c("secid","data_month")]),]
-# OPTION_VOLUME['SECID'] <- OPTION_VOLUME$secid
-# OPTION_VOLUME <- OPTION_VOLUME[,names(OPTION_VOLUME)[!names(OPTION_VOLUME) %in% c("year","month","secid")]]
-# 
-# OPTION_VOLUME <- data.table(OPTION_VOLUME)
-# setkeyv(OPTION_VOLUME,c('SECID','data_month'))
-# 
-# stargazer(head(OPTION_VOLUME,10),summary = FALSE,type="text")
+```{r}
+saveRDS(merged,file="E:/shortselling/Data/Processed/Monthly_sample_Nov122017.rds")
 ```
 
-
-# OPTIONM Trading Data
-```{r optionm_trading}
-# databases <- run_and_fetch("select distinct memname from dictionary.columns where libname='OPTIONM'")
-#,
-secids <- paste("",as.character(unique(SECNMD_MONTHLY$SECID)),"",collapse=", ",sep="")
-
-
-# years <- c(1996:2016)
-# for(yr in years) {
-#   print(yr)
-#   run_query(paste("select min(secid) as secid,min(year(date)) as year, min(month(date)) as month,max(exdate) as max_exdate,min(last_date) as last_traded_date,sum(volume) as opt_volume,max(open_interest) as opt_open_interest,min(cp_flag) as cp_flag,avg(strike_price) as strike_price from optionm.OPPRCD",yr,"  where secid in (",secids,") group by secid,year(date),month(date),cp_flag",sep=""))
-#   fetch_last_query(name=paste("OPTION_PRICE",yr,sep=""),rows = -1)
-#   #
-#   # eval(parse(text=paste("saveRDS(OPTION_PRICE",yr,",file='E:/shortselling/Data/Processed/OPTION_PRICE",yr,".rds')",sep="")))
-# }
-# 
-# OPTION_PRICE <- NULL
-# years <- c(1996:2016)
-# for(yr in years) {
-#   eval(parse(text=paste("OPTION_PRICE <- rbind(OPTION_PRICE,OPTION_PRICE",yr,")",sep="")))
-#   eval(parse(text=paste("rm(OPTION_PRICE",yr,")",sep="")))
-# }
+```{r}
+# yr=1996
+# secids = c(5005)
 # 
 # 
-# OPTION_PRICE['data_month'] <- as.Date(paste(OPTION_PRICE$year,OPTION_PRICE$month,"01",sep="-"))
-# OPTION_PRICE['SECID'] <- OPTION_PRICE$secid
-# OPTION_PRICE$year <- NULL
-# OPTION_PRICE$month <- NULL
-# OPTION_PRICE$secid <- NULL
-# saveRDS(OPTION_PRICE,file='E:/shortselling/Data/Processed/OPTION_PRICE_MONTHLY.rds')
+# run_query(paste("SELECT secid,date,exdate,cp_flag,strike_price/1000 as strike_price,best_bid,best_offer,volume,open_interest,impl_volatility,underlyingprice, volume as optionvolume,underlyingvolume from (SELECT op1.*,opid.* from (SELECT ds1.*,abs(ds1.exdate-ds1.date-30) as time_to_exp,ds1.cp_flag,ds2.*  from optionm.OPPRCD1996 as ds1 JOIN (SELECT secid,date,min(abs(exdate-date-30)) as time_to_exp2,cp_flag from optionm.OPPRCD1996 where secid in (",secids,") group by secid,date,cp_flag ) as ds2 ON ds1.secid = ds2.secid AND ds1.date = ds2.date AND ds1.cp_flag = ds2.cp_flag) as op1 JOIN (SELECT secid,date,close as underlyingprice,volume as underlyingvolume from optionm.secprd1996 where secid in (",secids,") ) as opid ON op1.secid=opid.secid AND op1.date=opid.date where time_to_exp=time_to_exp2) ",sep=""))
 # 
+# 
+# fetch_last_query(name=paste("OPTION_PRICE",sep=""),rows = -1)
+# 
+# OPTION_PRICE <- OPTION_PRICE[OPTION_PRICE$date=='1996-01-08',]
 
 
-
-OPTION_PRICE <- as.data.frame(readRDS(file='E:/shortselling/Data/Processed/OPTION_PRICE_MONTHLY.rds'))
-OPTION_PRICE$data_month <- as.yearmon(OPTION_PRICE$data_month)
-
-OPTION_PRICE_CALL <- OPTION_PRICE[OPTION_PRICE$cp_flag=="C",]
-names(OPTION_PRICE_CALL) <- c(paste("call_",names(OPTION_PRICE)[1:6],sep=""),names(OPTION_PRICE_CALL)[7:8])
-OPTION_PRICE_CALL$call_cp_flag <- NULL
-
-OPTION_PRICE_PUT <- OPTION_PRICE[OPTION_PRICE$cp_flag=="P",]
-names(OPTION_PRICE_PUT) <- c(paste("put_",names(OPTION_PRICE)[1:6],sep=""),names(OPTION_PRICE)[7:8])
-OPTION_PRICE_PUT$put_cp_flag <- NULL
-
-OPTION_PRICE <- data.table(OPTION_PRICE)
-setkeyv(OPTION_PRICE,c('SECID','data_month'))
-
-OPTION_PRICE_CALL <- data.table(OPTION_PRICE_CALL)
-setkeyv(OPTION_PRICE_CALL,c('SECID','data_month'))
-
-OPTION_PRICE_PUT <- data.table(OPTION_PRICE_PUT)
-setkeyv(OPTION_PRICE_PUT,c('SECID','data_month'))
-
-MIN_OPTION_DATE <- ddply(OPTION_PRICE,.(SECID),summarise,min_option_date=min(data_month))
-MIN_OPTION_DATE <- data.table(MIN_OPTION_DATE)
-setkeyv(MIN_OPTION_DATE,c('SECID'))
+# SELECT ds1.*,abs(ds1.exdate-ds1.date-30) as time_to_exp,ds1.cp_flag,ds2.*  from optionm.OPPRCD1996 as ds1 JOIN (SELECT secid,date,min(abs(exdate-date-30)) as time_to_exp2,cp_flag from optionm.OPPRCD1996 where secid in (",secids,") group by secid,date,cp_flag ) as ds2 ON ds1.secid = ds2.secid AND ds1.date = ds2.date AND ds1.cp_flag = ds2.cp_flag
 ```
 
-# OPTIONM Standardized Options
-
-```{r optionm_stdopd}
-# secids <- paste("",as.character(unique(SECNMD_MONTHLY$SECID)),"",collapse=", ",sep="")
-# 
-# # testing secid = 207283
-# 
-# 
-# # run_query(paste("select * from optionm.",database[14]," where secid in (",207283,") & year(date)>=2002  ",sep=""))
-# # fetch_last_query(name="OPTION_DAYS",rows = -1)
-# 
-# 
-# OPTION_DAYS <- NULL
-# years <- c(2002:2016)
-# for(yr in years) {
-#   run_query(paste("select min(secid) as secid,min(year(date)) as year, min(month(date)) as month,max(days) as max_days_opt_exp from optionm.stdopd",yr,"  where secid in (",secids,") group by secid,year(date),month(date)",sep=""))
-#   fetch_last_query(name=paste("OPTION_DAYS",yr,sep=""),rows = -1)
-#   eval(parse(text=paste("OPTION_DAYS <- rbind(OPTION_DAYS,OPTION_DAYS",yr,")",sep="")))
-#   eval(parse(text=paste("rm(OPTION_DAYS",yr,")",sep="")))
-# }
-# 
-# OPTION_DAYS['data_month'] <- as.yearmon(as.Date(paste(OPTION_DAYS$year,OPTION_DAYS$month,"01",sep="-")))
-# OPTION_DAYS <- OPTION_DAYS[!(is.na(OPTION_DAYS$max_days_opt_exp)),]
-# OPTION_DAYS <- OPTION_DAYS[!duplicated(OPTION_DAYS[,c("secid","data_month")]),]
-# OPTION_DAYS['SECID'] <- OPTION_DAYS$secid
-# OPTION_DAYS <- OPTION_DAYS[,names(OPTION_DAYS)[!names(OPTION_DAYS) %in% c("year","month","secid")]]
-# 
-# OPTION_DAYS <- data.table(OPTION_DAYS)
-# setkeyv(OPTION_DAYS,c('SECID','data_month'))
-# 
-# stargazer(head(OPTION_DAYS,10),summary = FALSE,type="text")
-```
-
-
-# OPTION Volatility
-```{r option_volatility}
-# secids <- paste("",as.character(unique(SECNMD_MONTHLY$SECID)),"",collapse=", ",sep="")
-# # # testing secid = 207283
-# years <- c(2002:2003)
-# for(yr in years) {
-#   print(yr)
-#   run_query("select CUSIP,abs(PRC) as price,DATE from CRSPA.DSF")
-#   fetch_last_query(name="tt",rows=1)
-#   
-#   run_query(paste("select equity.CUSIP,equity.DATE,equity.PRC,options.* from CRSPA.DSF as equity JOIN (SELECT ds1.cusip,ds1.secid,ds2.*  from OPTIONM.SECNMD as ds1 JOIN (SELECT secid,(exdate-date) as days,date,secid as secid2,cp_flag,impl_volatility,strike_price/1000 as strike_price from optionm.OPPRCD2015 where secid in (",secids,") & (exdate-date)>20 & (exdate-date)<40 & impl_volatility IS NOT NULL) as ds2 ON ds1.secid = ds2.secid) as options ON equity.CUSIP=options.cusip AND equity.DATE=options.date AND abs(abs(equity.PRC)-options.strike_price)/options.strike_price <0.1",sep=""))
-#   
-#   fetch_last_query(name=paste("OPTION_VOL",yr,sep=""),rows = -1)
-# }
-```
-
-# OPTION Volatility from Vol Surf
-```{r option_volatility_surf}
-# databases <- run_and_fetch("select distinct memname from dictionary.columns where libname='OPTIONM'")
-secids <- paste("",as.character(unique(SECNMD_MONTHLY$SECID)),"",collapse=", ",sep="")
-# # testing secid = 207283
-
-# 
-# years <- c(2002:2016)
-# for(yr in years) {
-#   print(yr)
-#   run_query(paste("select min(secid) as SECID,min(year(date)) as year, min(month(date)) as month,min(cp_flag) as cp_flag,avg(impl_volatility) as impl_volatility, avg(impl_premium) as impl_premium from optionm.vsurfd",yr,"  where secid in (",secids,") & days=30 & abs(delta)=50 group by secid,year(date),month(date),cp_flag",sep=""))
-#   fetch_last_query(name=paste("OPTION_IMPVOL",yr,sep=""),rows = -1)
-#   eval(parse(text=paste("saveRDS(OPTION_IMPVOL",yr,",file='E:/shortselling/Data/Processed/OPTION_IMPVOL",yr,".rds')",sep="")))
-#   # eval(parse(text=paste("OPTION_IMPVOL <- rbind(OPTION_IMPVOL,OPTION_IMPVOL",yr,")",sep="")))
-#   eval(parse(text=paste("rm(OPTION_IMPVOL",yr,")",sep="")))
-# }
-# 
-# OPTION_IMPVOL <- NULL
-# for(yr in years) {
-#   eval(parse(text=paste("temp <- readRDS(file='E:/shortselling/Data/Processed/OPTION_IMPVOL",yr,".rds')",sep="")))
-#   OPTION_IMPVOL <- rbind(OPTION_IMPVOL,temp)
-# }
-# saveRDS(OPTION_IMPVOL,file='E:/shortselling/Data/Processed/OPTION_IMPVOL_all_years.rds')
-
-OPTION_IMPVOL <- readRDS(file='E:/shortselling/Data/Processed/OPTION_IMPVOL_all_years.rds')
-OPTION_IMPVOL['data_month'] <- as.yearmon(as.Date(paste(OPTION_IMPVOL$year,OPTION_IMPVOL$month,"01",sep="-")))
-
-OPTION_IMPVOL$year <- NULL
-OPTION_IMPVOL$month <- NULL
-
-OPTION_IMPVOL_CALL <- OPTION_IMPVOL[OPTION_IMPVOL$cp_flag =="C",]
-names(OPTION_IMPVOL_CALL) <- c("SECID",paste("call_",names(OPTION_IMPVOL)[2:4],sep=""),"data_month")
-OPTION_IMPVOL_CALL$call_cp_flag <- NULL
-
-OPTION_IMPVOL_PUT <- OPTION_IMPVOL[OPTION_IMPVOL$cp_flag =="P",]
-names(OPTION_IMPVOL_PUT) <- c("SECID",paste("put_",names(OPTION_IMPVOL)[2:4],sep=""),"data_month")
-OPTION_IMPVOL_PUT$put_cp_flag <- NULL
-
-OPTION_IMPVOL_CALL <- data.table(OPTION_IMPVOL_CALL)
-setkeyv(OPTION_IMPVOL_CALL,c('SECID','data_month'))
-
-OPTION_IMPVOL_PUT <- data.table(OPTION_IMPVOL_PUT)
-setkeyv(OPTION_IMPVOL_PUT,c('SECID','data_month'))
-```
-
-
-# Merge OPTIONMATRIX with Fee data
-```{r merge_optionm_fee}
-merged <- merge(merged,OPTION_PRICE_CALL,by=c("SECID","data_month"),all.x = TRUE)
-merged <- merge(merged,OPTION_PRICE_PUT,by=c("SECID","data_month"),all.x = TRUE)
-merged <- merge(merged,OPTION_IMPVOL_CALL,by=c("SECID","data_month"),all.x = TRUE)
-merged <- merge(merged,OPTION_IMPVOL_PUT,by=c("SECID","data_month"),all.x = TRUE)
-merged <- merge(merged,MIN_OPTION_DATE,by=c("SECID"),all.x = TRUE)
-```
-
-# Clean Merged Data
-
-```{r clean_merged_data}
-merged <- as.data.frame(merged)
-merged$put_max_exdate <- as.Date(merged$put_max_exdate)
-merged$put_last_traded_date <- as.Date(merged$put_last_traded_date)
-merged$call_max_exdate <- as.Date(merged$call_max_exdate)
-merged$call_last_traded_date <- as.Date(merged$call_last_traded_date)
-
-saveRDS(merged,file="E:/shortselling/Data/Processed/Monthly_sample_Aug172017.rds")
-write.table(merged,file="E:/shortselling/Data/Processed/Monthly_sample_Aug172017.csv",sep="|",col.names = TRUE)
-str(merged)
-```
 
 
 ```{r}
 dbDisconnect(wrds)
 ```
 
-AS ds1
-                  JOIN
-                  (SELECT cusip,secid from OPTIONM.SECNMD)  as ds2
-                  ON ds1.secid=ds2.secid 
